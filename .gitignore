@@ -1,0 +1,18 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+gp_data_v4.egg-info/
+
+# Environment
+.venv/
+env/
+.env
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# OS specific
+.DS_Store
