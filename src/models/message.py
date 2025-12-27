@@ -16,7 +16,7 @@ class Message(MongoBaseModel):
     Inherits created_at from MongoBaseModel, but uses 'timestamp' 
     for domain-specific clarity in conversation flows.
     """
-    lead_id: str = Field(..., index=True) # Linked to Lead.lead_id
+    lead_id: str = Field(..., json_schema_extra={"index": True})
     role: MessageRole
     content: str
     # Store tokens used for this specific message for cost tracking
