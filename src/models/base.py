@@ -1,6 +1,6 @@
-from datetime import datetime, timezone
+import datetime as dt
 from typing import Annotated, Optional
-from pydantic import BaseModel, Field, ConfigDict, BeforeValidator
+from pydantic import BaseModel, Field, ConfigDict, BeforeValidator, field_serializer
 
 # Standardizes MongoDB ObjectIds to strings
 PyObjectId = Annotated[str, BeforeValidator(str)]
@@ -9,11 +9,14 @@ class MongoBaseModel(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
         arbitrary_types_allowed=True,
-        # Standardize for React 19/Vite 7 frontend consumers
-        json_encoders={datetime: lambda v: v.isoformat()},
         extra='forbid' 
     )
 
     id: Optional[PyObjectId] = Field(None, alias="_id")
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.UTC))
+    updated_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.UTC))
+
+    # MODERN SERIALIZATION: This is the Late-2025 way
+    @field_serializer("created_at", "updated_at")
+    def serialize_dt(self, value: dt.datetime):
+        return value.isoformat()
