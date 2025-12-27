@@ -1,7 +1,9 @@
 import pytest
 import datetime as dt
+import os
 from src.models.lead import Lead
 from src.models.message import Message, MessageRole
+from dotenv import load_dotenv
 
 @pytest.fixture
 def mock_lead():
@@ -17,3 +19,8 @@ def mock_lead_message(mock_lead):
         content="I am interested in pricing for 10 users.",
         timestamp=dt.datetime.now(dt.UTC)
     )
+
+def pytest_configure(config):
+    load_dotenv()
+    if not os.getenv("OPENAI_API_KEY"):
+        print("\n⚠️ WARNING: OPENAI_API_KEY not found. AI tests will be skipped.")

@@ -40,7 +40,7 @@ class ClassifierAgent:
         # Note: We provide the current time so the AI understands 'recency'
         context_prompt = f"""
         CURRENT DATE:
-        {dt.UTC}
+        {dt.datetime.now(dt.UTC).isoformat()}
         
         CONVERSATION CONTEXT:
         {history_str}
