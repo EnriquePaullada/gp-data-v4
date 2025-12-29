@@ -77,16 +77,15 @@ class DirectorService:
 
         # --- LAYER 3: THE STRATEGIC PROMPT ---
         prompt = f"""
-        BANT KNOWLEDGE GRAPH:
-        {lead.bant_summary}
-        
-        CURRENT SALES STAGE: 
-        {lead.current_stage}
+        #LEAD DOSSIER
+            Name: {lead.full_name}
+            Sales Stage: {lead.current_stage}
+            BANT KNOWLEDGE GRAPH:: {lead.bant_summary}
 
-        RECENT CONVERSATION HISTORY:
-        {transcript}
+        #RECENT CONVERSATION HISTORY:
+        [{transcript}]
 
-        LATEST MESSAGE CLASSIFICATION:
+        #LATEST SIGNAL
         - Intent: {classification.intent}
         - Reasoning: {classification.reasoning}
         - New Signals Extracted: {classification.new_signals}
@@ -95,7 +94,7 @@ class DirectorService:
         Analyze the rich lead context and think of several ways of achieving your purpose.
         Finally, provide the Communication Executor the best strategic guidance.
         """
-        
+          
         result = await director_agent.run(prompt, deps=self.deps)
         logger.success(f"♟️ Strategy Decided: {result.output.action}")
         return result.output
