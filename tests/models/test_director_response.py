@@ -22,6 +22,16 @@ def test_director_response_valid():
     assert response.action == StrategicAction.QUALIFY
     assert len(response.message_strategy.key_points) == 1
 
+def test_director_response_missing_fields():
+    """Ensures the model fails if the message strategy is missing."""
+    with pytest.raises(ValidationError):
+        # Action is provided, but message_strategy (required) is not
+        DirectorResponse(
+            action=StrategicAction.NURTURE,
+            strategic_reasoning="Test",
+            key_points_to_address=[]
+        )
+
 def test_director_response_invalid_action():
     """Ensures Pydantic catches invalid Enum values."""
     with pytest.raises(ValidationError):
