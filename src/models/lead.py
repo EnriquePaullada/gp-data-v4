@@ -62,6 +62,30 @@ class Lead(MongoBaseModel):
         # Maintain a sliding window (e.g., keep only last 20)
         if len(self.recent_history) > 20:
             self.recent_history.pop(0)
-        
+
         self.message_count += 1
         self.last_interaction_at = message.timestamp if message.timestamp else dt.datetime.now(dt.UTC)
+
+    def format_history(self, limit: int | None = None, include_roles: bool = True) -> str:
+        """
+        Formats conversation history for LLM context.
+
+        Centralizes the repeated pattern of formatting messages across all agents.
+        This eliminates DRY violations and ensures consistent formatting.
+
+        Args:
+            limit: Number of recent messages to include (None = all in recent_history)
+            include_roles: Whether to prefix each line with "ROLE:" (default: True)
+
+        Returns:
+            Formatted string ready for LLM prompt injection
+
+        Example:
+            >>> lead.format_history(limit=3)
+            'LEAD: Hello\\nASSISTANT: Hi there!\\nLEAD: I need help'
+        """
+        messages = self.recent_history[-limit:] if limit else self.recent_history
+
+        if include_roles:
+            return "\n".join([f"{msg.role.upper()}: {msg.content}" for msg in messages])
+        return "\n".join([msg.content for msg in messages])
