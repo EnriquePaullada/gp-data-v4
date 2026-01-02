@@ -2,16 +2,17 @@
 Centralized Configuration System
 Environment-aware settings for all agents and services.
 """
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="allow"
+        extra="ignore"
     )
     """
     Production-grade configuration management.
@@ -21,7 +22,7 @@ class Settings(BaseSettings):
     # ============================================
     # OPENAI CONFIGURATION
     # ============================================
-    openai_api_key: str
+    openai_api_key: str = Field(..., validation_alias="OPENAI_API_KEY")
 
     # ============================================
     # MODEL SELECTION (by agent role)
@@ -55,13 +56,13 @@ class Settings(BaseSettings):
     # ============================================
     # ENVIRONMENT
     # ============================================
-    environment: Literal["development", "staging", "production"] = "development"
+    environment: Literal["development", "staging", "production", "test"] = "development"
 
     # ============================================
     # MONGODB CONFIGURATION
     # ============================================
-    mongodb_uri: str = "mongodb://localhost:27017"
-    mongodb_database: str = "gp_data_v4"
+    mongodb_uri: str = Field(..., validation_alias="MONGODB_URI")
+    mongodb_database: str = Field("gp-data-v4", validation_alias="MONGODB_DATABASE")
     mongodb_max_pool_size: int = 10
     mongodb_min_pool_size: int = 1
     mongodb_server_selection_timeout_ms: int = 5000  # 5 seconds
