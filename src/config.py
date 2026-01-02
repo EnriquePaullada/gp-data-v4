@@ -57,6 +57,21 @@ class Settings(BaseSettings):
     # ============================================
     environment: Literal["development", "staging", "production"] = "development"
 
+    # ============================================
+    # MONGODB CONFIGURATION
+    # ============================================
+    mongodb_uri: str = "mongodb://localhost:27017"
+    mongodb_database: str = "gp_data_v4"
+    mongodb_max_pool_size: int = 10
+    mongodb_min_pool_size: int = 1
+    mongodb_server_selection_timeout_ms: int = 5000  # 5 seconds
+
+    # ============================================
+    # DATA RETENTION & ARCHIVAL
+    # ============================================
+    message_retention_days: int = 365
+    enable_message_archival: bool = True
+
 
 @lru_cache()
 def get_settings() -> Settings:
