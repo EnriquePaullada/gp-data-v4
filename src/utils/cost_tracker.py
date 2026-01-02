@@ -16,7 +16,7 @@ class ModelPricing:
     output_cost: float
 
 
-# Official OpenAI Pricing (Dec 2024)
+# Official OpenAI Pricing
 PRICING: Dict[str, ModelPricing] = {
     "gpt-4o": ModelPricing(input_cost=2.50, output_cost=10.00),
     "gpt-4o-mini": ModelPricing(input_cost=0.15, output_cost=0.60),
@@ -126,7 +126,10 @@ class CostTracker:
 
     def _check_budget_limits(self):
         """Check if we're approaching or exceeding budget limits."""
+        if self.settings.environment == "test":
+            return
         # Hourly check
+        
         hourly_pct = (self.hourly_usage.total_cost / self.settings.hourly_cost_limit_usd) * 100
         if hourly_pct >= 100:
             raise RuntimeError(

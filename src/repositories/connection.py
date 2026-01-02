@@ -29,9 +29,15 @@ class DatabaseManager:
         Initialize MongoDB connection with configured pool settings.
         Idempotent - safe to call multiple times.
         """
-        if self._client is not None:
-            logger.debug("MongoDB client already connected")
-            return
+        if self._client:
+            try:
+                await self._client.admin.command("ping")
+                logger.debug("Reusing healthy MongoDB connection")
+                return 
+            except (RuntimeError, Exception):
+                logger.warning("Event loop closed or connection lost. Rebuilding client...")
+                self._client = None
+                self._database = None
 
         logger.info(
             f"Connecting to MongoDB at {settings.mongodb_uri}",
@@ -41,7 +47,6 @@ class DatabaseManager:
                 "environment": settings.environment
             }
         )
-
         self._client = AsyncIOMotorClient(
             settings.mongodb_uri,
             maxPoolSize=settings.mongodb_max_pool_size,
@@ -50,10 +55,6 @@ class DatabaseManager:
         )
 
         self._database = self._client[settings.mongodb_database]
-
-        # Verify connection with ping
-        await self._client.admin.command("ping")
-        logger.info("MongoDB connection established successfully")
 
     async def disconnect(self) -> None:
         """

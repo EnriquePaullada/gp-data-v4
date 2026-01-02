@@ -61,8 +61,14 @@ class Settings(BaseSettings):
     # ============================================
     # MONGODB CONFIGURATION
     # ============================================
-    mongodb_uri: str = Field(..., validation_alias="MONGODB_URI")
-    mongodb_database: str = Field("gp-data-v4", validation_alias="MONGODB_DATABASE")
+    mongodb_uri: str = Field(
+        default="mongodb://localhost:27017",
+        validation_alias="MONGODB_URI"
+    )
+    mongodb_database: str = Field(
+        default="gp-data-v4",
+        validation_alias="MONGODB_DATABASE"
+    )
     mongodb_max_pool_size: int = 10
     mongodb_min_pool_size: int = 1
     mongodb_server_selection_timeout_ms: int = 5000  # 5 seconds

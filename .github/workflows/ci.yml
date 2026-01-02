@@ -10,7 +10,16 @@ jobs:
   test:
     name: Run Tests
     runs-on: ubuntu-latest
-    # Use the exact Python version from your .python-version file
+    
+    services:
+      mongodb:
+        image: mongo:latest
+        ports:
+          - 27017:27017
+        env:
+          MONGO_INITDB_ROOT_USERNAME: ${{ secrets.MONGO_INITDB_ROOT_USERNAME }}
+          MONGO_INITDB_ROOT_PASSWORD: ${{ secrets.MONGO_INITDB_ROOT_PASSWORD }}
+
     strategy:
       matrix:
         python-version: ["3.12"]
