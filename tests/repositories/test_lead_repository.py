@@ -391,10 +391,8 @@ class TestLeadRepositorySaveUpsert:
         assert saved_lead.signals[0].dimension == BANTDimension.BUDGET
 
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest.fixture(scope="function", autouse=True)
 async def cleanup_database():
     """Clean up test database after all tests."""
     yield
-    await db_manager.connect()
-    await db_manager.database.leads.delete_many({"lead_id": {"$regex": "^\\+test"}})
-    await db_manager.disconnect()
+    # Cleanup handled by lead_repo fixture per test

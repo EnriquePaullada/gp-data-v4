@@ -418,10 +418,8 @@ class TestMessageRepositoryDeletion:
         assert deleted_count == 0
 
 
-@pytest.fixture(scope="module", autouse=True)
+@pytest.fixture(scope="function", autouse=True)
 async def cleanup_database():
     """Clean up test database after all tests."""
     yield
-    await db_manager.connect()
-    await db_manager.database.messages.delete_many({"lead_id": {"$regex": "^\\+test"}})
-    await db_manager.disconnect()
+    # Cleanup handled by message_repo fixture per test
