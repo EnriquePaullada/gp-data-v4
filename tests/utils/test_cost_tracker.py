@@ -4,6 +4,7 @@ Verifies token counting, cost calculations, and budget limits.
 """
 import pytest
 from src.utils.cost_tracker import CostTracker, PRICING, get_cost_tracker
+from src.config import get_settings
 
 
 class TestCostTracker:
@@ -122,8 +123,12 @@ class TestCostTracker:
         # Should default to gpt-4o pricing
         assert cost == 12.50
 
-    def test_budget_enforcement_hourly(self):
+    def test_budget_enforcement_hourly(self, monkeypatch):
         """Verify hourly budget limit triggers exception."""
+        # Temporarily set environment to development to enable budget enforcement
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        get_settings.cache_clear()
+
         tracker = CostTracker()
         tracker.settings.hourly_cost_limit_usd = 1.0  # Set very low limit
 
@@ -144,8 +149,15 @@ class TestCostTracker:
                 agent_name="TestAgent"
             )
 
-    def test_budget_enforcement_daily(self):
+        # Restore test environment
+        get_settings.cache_clear()
+
+    def test_budget_enforcement_daily(self, monkeypatch):
         """Verify daily budget limit triggers exception."""
+        # Temporarily set environment to development to enable budget enforcement
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        get_settings.cache_clear()
+
         tracker = CostTracker()
         tracker.settings.daily_cost_limit_usd = 1.0  # Set very low limit
         tracker.settings.hourly_cost_limit_usd = 100.0  # High hourly to test daily
@@ -157,6 +169,9 @@ class TestCostTracker:
                 output_tokens=1_000_000,
                 agent_name="TestAgent"
             )
+
+        # Restore test environment
+        get_settings.cache_clear()
 
     def test_summary_generation(self):
         """Verify get_summary() returns correct structure."""

@@ -10,7 +10,7 @@ import datetime as dt
 from ..models.base import MongoBaseModel
 from ..utils.observability import logger
 
-# Generic type for domain models
+# Generic type for domain models    
 T = TypeVar("T", bound=MongoBaseModel)
 
 
@@ -63,7 +63,13 @@ class BaseRepository(Generic[T]):
         document.updated_at = now
 
         # Convert Pydantic model to dict for MongoDB
-        doc_dict = document.model_dump(by_alias=True, exclude={"id"})
+        doc_dict = document.model_dump(
+            by_alias=True, 
+            exclude={"id"},
+            exclude_none=True)
+
+        for computed_field in type(document).model_computed_fields:
+            doc_dict.pop(computed_field, None)
 
         result = await self.collection.insert_one(doc_dict)
 
@@ -255,8 +261,17 @@ class BaseRepository(Generic[T]):
         Returns:
             Domain model instance
         """
+        if not doc:
+            return None
         # Convert ObjectId to string for Pydantic validation
         if "_id" in doc:
             doc["_id"] = str(doc["_id"])
 
-        return self.model_class.model_validate(doc)
+        model_fields = self.model_class.model_fields.keys()
+
+        cleaned_doc = {
+            k: v for k, v in doc.items() 
+            if k in model_fields or k == "_id"
+        }
+
+        return self.model_class.model_validate(cleaned_doc)
