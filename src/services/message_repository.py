@@ -6,7 +6,7 @@ from typing import List, Optional
 from motor.motor_asyncio import AsyncIOMotorDatabase
 import datetime as dt
 
-from .base_repository import BaseRepository
+from ..repositories.base import BaseRepository
 from ..models.message import Message, MessageRole
 from ..utils.observability import logger
 

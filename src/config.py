@@ -87,6 +87,23 @@ class Settings(BaseSettings):
     message_retention_days: int = 365
     enable_message_archival: bool = True
 
+    # ============================================
+    # TWILIO CONFIGURATION
+    # ============================================
+    twilio_account_sid: Optional[str] = Field(
+        default=None,
+        validation_alias="TWILIO_ACCOUNT_SID"
+    )
+    twilio_auth_token: Optional[str] = Field(
+        default=None,
+        validation_alias="TWILIO_AUTH_TOKEN"
+    )
+    twilio_whatsapp_from: str = Field(
+        default="whatsapp:+16205828564",
+        validation_alias="TWILIO_WHATSAPP_FROM",
+        description="Your Twilio WhatsApp number (format: whatsapp:+16205828564)"
+    )
+
 
 @lru_cache()
 def get_settings() -> Settings:

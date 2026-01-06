@@ -79,7 +79,7 @@ class SecurityValidator:
         r"DAN\s+mode",
         r"jailbreak",
         r"pretend\s+you\s+are",
-        r"act\s+as\s+(if\s+)?(you\s+)?(a|an)",
+        r"act\s+as\s+(if\s+)?(a|an)",
         r"roleplay\s+as",
         r"<\s*system\s*>",
         r"</\s*system\s*>",
@@ -131,13 +131,13 @@ class SecurityValidator:
         r"\$\(.*\)",  # Command substitution
     ]
 
-    # Basic profanity list (production would use a comprehensive library)
+    # Basic profanity list
     PROFANITY_WORDS = [
         "fuck", "shit", "bitch", "asshole", "cunt", "damn",
         "piss", "bastard", "slut", "whore", "dick", "cock"
     ]
 
-    # Hate speech indicators (basic - production needs NLP model)
+    # Hate speech indicators
     HATE_SPEECH_PATTERNS = [
         r"\bn[i1]gg[ea]r",
         r"\bf[a@]gg[o0]t",
@@ -280,16 +280,15 @@ class SecurityValidator:
             )
 
         # Check for repeated characters (e.g., "aaaaaaaaaa...")
-        # Look for sequences of the same character repeated many times
-        import re as regex_module
-        repeated_pattern = regex_module.compile(r'(.)\1{' + str(self.MAX_REPEATED_CHARS - 1) + r',}')
-        if repeated_pattern.search(message):
-            return SecurityThreat(
-                threat_type=ThreatType.CONTEXT_FLOODING,
-                severity="high",
-                description="Repeated character spam detected",
-                recommended_action="block"
-            )
+        for char in set(message):
+            if char * self.MAX_REPEATED_CHARS in message:
+                return SecurityThreat(
+                    threat_type=ThreatType.CONTEXT_FLOODING,
+                    severity="medium",
+                    description="Repeated character spam detected",
+                    matched_pattern=char * self.MAX_REPEATED_CHARS,
+                    recommended_action="block"
+                )
 
         # Check for word repetition
         words = message.lower().split()
@@ -300,7 +299,7 @@ class SecurityValidator:
             if max_count > self.MAX_WORD_REPETITION:
                 return SecurityThreat(
                     threat_type=ThreatType.CONTEXT_FLOODING,
-                    severity="high",
+                    severity="medium",
                     description="Excessive word repetition detected",
                     recommended_action="block"
                 )
@@ -365,16 +364,15 @@ class SecurityValidator:
                     recommended_action="block"
                 )
 
-        # Check basic profanity - look for words in the message
-        for profane_word in self.PROFANITY_WORDS:
-            # Use word boundaries to match whole words
-            pattern = r'\b' + re.escape(profane_word) + r'\b'
-            if re.search(pattern, message_lower):
+        # Check basic profanity
+        words = re.findall(r'\b\w+\b', message_lower)
+        for word in words:
+            if word in self.PROFANITY_WORDS:
                 return SecurityThreat(
                     threat_type=ThreatType.PROFANITY,
                     severity="low",
                     description="Profanity detected",
-                    matched_pattern=profane_word,
+                    matched_pattern=word,
                     recommended_action="warn"
                 )
 
@@ -440,13 +438,16 @@ class SecurityValidator:
             return False
 
         # Luhn algorithm
-        def luhn_check(card_num):
-            digits = [int(d) for d in card_num]
-            # Double every second digit from right to left
-            for i in range(len(digits) - 2, -1, -2):
-                digits[i] *= 2
-                if digits[i] > 9:
-                    digits[i] -= 9
-            return sum(digits) % 10 == 0
+        def luhn_checksum(card):
+            def digits_of(n):
+                return [int(d) for d in str(n)]
 
-        return luhn_check(card_number)
+            digits = digits_of(card)
+            odd_digits = digits[-1::-2]
+            even_digits = digits[-2::-2]
+            checksum = sum(odd_digits)
+            for d in even_digits:
+                checksum += sum(digits_of(d * 2))
+            return checksum % 10
+
+        return luhn_checksum(card_number) == 0
