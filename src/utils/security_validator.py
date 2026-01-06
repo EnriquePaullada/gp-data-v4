@@ -206,7 +206,8 @@ class SecurityValidator:
             threats.append(threat)
 
         # Determine if message is safe
-        is_safe = not any(t.severity in ["critical", "high"] for t in threats)
+        # Block if any threat has recommended_action="block"
+        is_safe = not any(t.recommended_action == "block" for t in threats)
 
         if threats:
             logger.warning(
