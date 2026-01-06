@@ -260,3 +260,270 @@ class TestConversationOrchestrator:
 
         assert result is not None
         assert result.outbound_message is not None
+
+    # ============================================
+    # PERSISTENCE INTEGRATION TESTS
+    # ============================================
+
+    async def test_initialize_creates_repositories(self):
+        """Verify initialize() creates repository instances."""
+        orchestrator = ConversationOrchestrator()
+
+        # Before initialization
+        assert orchestrator.lead_repo is None
+        assert orchestrator.message_repo is None
+
+        # Initialize
+        await orchestrator.initialize()
+
+        # After initialization
+        assert orchestrator.lead_repo is not None
+        assert orchestrator.message_repo is not None
+
+        # Cleanup
+        await orchestrator.shutdown()
+
+    async def test_shutdown_cleans_up_resources(self):
+        """Verify shutdown() properly cleans up resources."""
+        orchestrator = ConversationOrchestrator()
+
+        await orchestrator.initialize()
+
+        # Verify repositories exist
+        assert orchestrator.lead_repo is not None
+        assert orchestrator.message_repo is not None
+
+        # Shutdown
+        await orchestrator.shutdown()
+
+        # Verify repositories are cleared
+        assert orchestrator.lead_repo is None
+        assert orchestrator.message_repo is None
+
+    async def test_process_message_persists_lead(self):
+        """Verify process_message persists lead to database."""
+        if not os.getenv("OPENAI_API_KEY"):
+            pytest.skip("No API Key found")
+
+        orchestrator = ConversationOrchestrator()
+        await orchestrator.initialize()
+
+        try:
+            # Create and persist a lead
+            lead = await orchestrator.lead_repo.get_or_create(
+                phone_number="+1234567890",
+                full_name="Test User"
+            )
+
+            initial_message_count = lead.message_count
+
+            # Process a message
+            message = "Hello, I need help with pricing"
+            result = await orchestrator.process_message(message, lead)
+
+            # Reload lead from database
+            reloaded_lead = await orchestrator.lead_repo.get_by_phone("+1234567890")
+
+            # Verify lead was persisted with updates
+            assert reloaded_lead is not None
+            assert reloaded_lead.message_count == initial_message_count + 2
+            assert reloaded_lead.last_interaction_at is not None
+
+        finally:
+            await orchestrator.shutdown()
+
+    async def test_process_message_persists_messages(self):
+        """Verify process_message persists messages to database."""
+        if not os.getenv("OPENAI_API_KEY"):
+            pytest.skip("No API Key found")
+
+        orchestrator = ConversationOrchestrator()
+        await orchestrator.initialize()
+
+        try:
+            # Create lead
+            lead = await orchestrator.lead_repo.get_or_create(
+                phone_number="+9876543210",
+                full_name="Message Test User"
+            )
+
+            # Process a message
+            message_content = "I want to schedule a demo"
+            result = await orchestrator.process_message(message_content, lead)
+
+            # Query messages from database
+            messages = await orchestrator.message_repo.get_conversation_history(
+                lead_id="+9876543210",
+                limit=10
+            )
+
+            # Should have 2 messages: incoming (LEAD) + outgoing (ASSISTANT)
+            assert len(messages) >= 2
+
+            # Verify incoming message
+            lead_message = next((m for m in messages if m.role == MessageRole.LEAD), None)
+            assert lead_message is not None
+            assert lead_message.content == message_content
+
+            # Verify assistant message
+            assistant_message = next((m for m in messages if m.role == MessageRole.ASSISTANT), None)
+            assert assistant_message is not None
+            assert assistant_message.content == result.outbound_message
+
+        finally:
+            await orchestrator.shutdown()
+
+    async def test_persisted_lead_can_be_reloaded(self):
+        """Verify full round-trip: persist lead, reload, verify state."""
+        if not os.getenv("OPENAI_API_KEY"):
+            pytest.skip("No API Key found")
+
+        orchestrator = ConversationOrchestrator()
+        await orchestrator.initialize()
+
+        try:
+            phone = "+5551234567"
+
+            # First conversation turn
+            lead = await orchestrator.lead_repo.get_or_create(
+                phone_number=phone,
+                full_name="Roundtrip Test"
+            )
+
+            result1 = await orchestrator.process_message(
+                "We have 30 employees",
+                lead
+            )
+
+            # Reload lead from database
+            reloaded_lead = await orchestrator.lead_repo.get_by_phone(phone)
+
+            assert reloaded_lead is not None
+            assert reloaded_lead.message_count == 2
+            assert reloaded_lead.full_name == "Roundtrip Test"
+
+            # Continue conversation with reloaded lead
+            result2 = await orchestrator.process_message(
+                "What's the pricing?",
+                reloaded_lead
+            )
+
+            # Reload again
+            final_lead = await orchestrator.lead_repo.get_by_phone(phone)
+
+            # Should have 4 messages total (2 exchanges)
+            assert final_lead.message_count == 4
+
+            # Verify message history in database
+            all_messages = await orchestrator.message_repo.get_conversation_history(
+                lead_id=phone,
+                limit=10
+            )
+
+            assert len(all_messages) == 4
+
+        finally:
+            await orchestrator.shutdown()
+
+    async def test_process_message_without_initialize_still_works(self, test_lead):
+        """Verify orchestrator works without initialize (for unit tests)."""
+        if not os.getenv("OPENAI_API_KEY"):
+            pytest.skip("No API Key found")
+
+        # Create orchestrator WITHOUT calling initialize()
+        orchestrator = ConversationOrchestrator()
+
+        # Should still process messages (just without persistence)
+        result = await orchestrator.process_message(
+            "Test message",
+            test_lead
+        )
+
+        # Verify pipeline still works
+        assert result is not None
+        assert result.outbound_message is not None
+        assert result.lead_updated.message_count == 2
+
+        # Repositories should still be None
+        assert orchestrator.lead_repo is None
+        assert orchestrator.message_repo is None
+
+    async def test_multiple_messages_accumulate_in_database(self):
+        """Verify multiple messages properly accumulate in database."""
+        if not os.getenv("OPENAI_API_KEY"):
+            pytest.skip("No API Key found")
+
+        orchestrator = ConversationOrchestrator()
+        await orchestrator.initialize()
+
+        try:
+            phone = "+1112223333"
+            lead = await orchestrator.lead_repo.get_or_create(
+                phone_number=phone,
+                full_name="Multi Message Test"
+            )
+
+            messages = [
+                "Hello",
+                "We have 50 employees",
+                "Need HubSpot integration"
+            ]
+
+            # Process multiple messages
+            for msg in messages:
+                result = await orchestrator.process_message(msg, lead)
+                lead = result.lead_updated
+
+            # Verify final state in database
+            final_lead = await orchestrator.lead_repo.get_by_phone(phone)
+            assert final_lead.message_count == 6  # 3 incoming + 3 assistant
+
+            # Verify all messages in database
+            all_messages = await orchestrator.message_repo.get_conversation_history(
+                lead_id=phone,
+                limit=20
+            )
+
+            assert len(all_messages) == 6
+
+            # Verify alternating roles
+            roles = [m.role for m in all_messages]
+            assert roles[0] == MessageRole.LEAD
+            assert roles[1] == MessageRole.ASSISTANT
+            assert roles[2] == MessageRole.LEAD
+            assert roles[3] == MessageRole.ASSISTANT
+
+        finally:
+            await orchestrator.shutdown()
+
+    async def test_signals_persisted_with_lead(self):
+        """Verify BANT signals are persisted with lead state."""
+        if not os.getenv("OPENAI_API_KEY"):
+            pytest.skip("No API Key found")
+
+        orchestrator = ConversationOrchestrator()
+        await orchestrator.initialize()
+
+        try:
+            phone = "+7778889999"
+            lead = await orchestrator.lead_repo.get_or_create(
+                phone_number=phone,
+                full_name="Signal Test"
+            )
+
+            # Message that should generate signals
+            result = await orchestrator.process_message(
+                "We're a team of 40 people and need pricing for HubSpot integration",
+                lead
+            )
+
+            # Reload from database
+            reloaded_lead = await orchestrator.lead_repo.get_by_phone(phone)
+
+            # Verify signals were persisted (if any were extracted)
+            # Note: Signal extraction depends on classifier, might be 0 or more
+            assert reloaded_lead.signals is not None
+            assert isinstance(reloaded_lead.signals, list)
+
+        finally:
+            await orchestrator.shutdown()

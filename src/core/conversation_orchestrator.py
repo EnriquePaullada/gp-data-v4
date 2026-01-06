@@ -16,6 +16,8 @@ from src.agents.classifier_agent import ClassifierAgent
 from src.agents.director_agent import DirectorService
 from src.agents.executor_agent import ExecutorService
 from src.utils.observability import log_agent_execution
+from src.repositories import db_manager, LeadRepository, MessageRepository
+from typing import Optional
 import time
 
 
@@ -76,7 +78,52 @@ class ConversationOrchestrator:
         self.director = director or DirectorService()
         self.executor = executor or ExecutorService()
 
-        logger.info("ConversationOrchestrator initialized with 3-agent pipeline")
+        # Initialize repository instances
+        self.lead_repo: Optional[LeadRepository] = None
+        self.message_repo: Optional[MessageRepository] = None
+
+        logger.info("Conversation Orchestrator initialized with 3-agent pipeline")
+
+    async def initialize(self) -> None:
+        """
+        Initialize MongoDB connection and repository instances.
+        
+        Must be called before processing messages in production.
+        For testing, this is optional - orchestrator will work without persistence.
+
+        Usage:
+            >>> orchestrator = ConversationOrchestrator()
+            >>> await orchestrator.initialize()
+            >>> # Now ready to process messages with persistence
+        """
+        logger.info("Initializing ConversationOrchestrator with MongoDB persistence")
+
+        # Connect to MongoDB
+        await db_manager.connect()
+
+        # Create indexes for optimal query performance
+        await db_manager.create_indexes()
+
+        # Initialize repository instances
+        db = db_manager.database
+        self.lead_repo = LeadRepository(db)
+        self.message_repo = MessageRepository(db)
+
+        logger.info("✅ ConversationOrchestrator initialized with persistence layer")
+
+    async def shutdown(self) -> None:
+        """
+        Gracefully shut down MongoDB connection.
+        Should be called when application is terminating.
+
+        Usage:
+            >>> await orchestrator.shutdown()
+        """
+        logger.info("Shutting down ConversationOrchestrator")
+        await db_manager.disconnect()
+        self.lead_repo = None
+        self.message_repo = None
+        logger.info("✅ ConversationOrchestrator shutdown complete")
 
     async def process_message(
         self,
@@ -140,6 +187,25 @@ class ConversationOrchestrator:
                 content=execution.message.content
             )
             lead.add_message(assistant_message)
+
+            # Step 5: Persist to MongoDB (if repositories initialized)
+            if self.lead_repo and self.message_repo:
+                logger.debug("Persisting lead and messages to MongoDB")
+
+                # Persist updated lead state
+                await self.lead_repo.save(lead)
+
+                # Persist both incoming and assistant messages
+                await self.message_repo.save_messages([incoming_message, assistant_message])
+
+                logger.debug(
+                    f"✅ Persisted lead and 2 messages to MongoDB",
+                    extra={
+                        "lead_id": lead.lead_id,
+                        "message_count": lead.message_count,
+                        "signals_count": len(lead.signals)
+                    }
+                )
 
             # Calculate total duration
             total_duration_ms = (time.time() - start_time) * 1000
