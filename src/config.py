@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     enable_structured_logging: bool = False  # Set to True for production JSON logs
 
+    # Security Validation
+    enable_security_validation: bool = True
+    max_message_length: int = 5000  # Maximum message length in characters
+    block_prompt_injection: bool = True
+    block_context_flooding: bool = True
+    block_profanity: bool = False  # Set to True to block profane messages
+    block_injection_attempts: bool = True  # SQL, XSS, command injection
+
     # ============================================
     # ENVIRONMENT
     # ============================================
@@ -78,6 +86,23 @@ class Settings(BaseSettings):
     # ============================================
     message_retention_days: int = 365
     enable_message_archival: bool = True
+
+    # ============================================
+    # TWILIO CONFIGURATION
+    # ============================================
+    twilio_account_sid: Optional[str] = Field(
+        default=None,
+        validation_alias="TWILIO_ACCOUNT_SID"
+    )
+    twilio_auth_token: Optional[str] = Field(
+        default=None,
+        validation_alias="TWILIO_AUTH_TOKEN"
+    )
+    twilio_whatsapp_from: str = Field(
+        default="whatsapp:+16205828564",
+        validation_alias="TWILIO_WHATSAPP_FROM",
+        description="Your Twilio WhatsApp number (format: whatsapp:+16205828564)"
+    )
 
 
 @lru_cache()
