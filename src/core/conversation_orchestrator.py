@@ -17,8 +17,15 @@ from src.agents.director_agent import DirectorService
 from src.agents.executor_agent import ExecutorService
 from src.utils.observability import log_agent_execution
 from src.repositories import db_manager, LeadRepository, MessageRepository
+from src.utils.security_validator import SecurityValidator, ValidationResult
+from src.config import settings
 from typing import Optional
 import time
+
+
+class SecurityException(Exception):
+    """Raised when a security threat is detected."""
+    pass
 
 
 @dataclass
@@ -82,6 +89,11 @@ class ConversationOrchestrator:
         self.lead_repo: Optional[LeadRepository] = None
         self.message_repo: Optional[MessageRepository] = None
 
+        # Security validator
+        self.security_validator = SecurityValidator(
+            max_message_length=settings.max_message_length
+        ) if settings.enable_security_validation else None
+
         logger.info("Conversation Orchestrator initialized with 3-agent pipeline")
 
     async def initialize(self) -> None:
@@ -134,12 +146,13 @@ class ConversationOrchestrator:
         Process an incoming message through the complete 3-agent pipeline.
 
         This is the main entry point for conversation processing. It:
+        0. Validates message security (prompt injection, PII, flooding)
         1. Adds the message to lead history
         2. Classifies the message (Agent 1)
         3. Determines strategy (Agent 2)
         4. Generates response (Agent 3)
         5. Updates lead state
-        6. Returns complete result
+        6. Persists to MongoDB (if enabled)
 
         Args:
             message_content: The incoming message text
@@ -149,13 +162,45 @@ class ConversationOrchestrator:
             OrchestrationResult with complete pipeline outputs
 
         Raises:
+            SecurityException: If security threats detected and message blocked
             Exception: If any critical step fails and fallbacks don't work
         """
         start_time = time.time()
 
         logger.info(f"🎬 Starting orchestration for lead: {lead.lead_id}")
 
-        # Step 0: Add incoming message to lead history
+        # Step 0: Security validation (if enabled)
+        validation_result: Optional[ValidationResult] = None
+        if self.security_validator:
+            validation_result = self.security_validator.validate_message(
+                message_content,
+                lead.lead_id
+            )
+
+            if validation_result.should_block:
+                logger.warning(
+                    f"🚫 Message blocked due to security threats: {lead.lead_id}",
+                    extra={
+                        "lead_id": lead.lead_id,
+                        "threats": [t.threat_type for t in validation_result.threats],
+                        "threat_count": len(validation_result.threats)
+                    }
+                )
+                # Raise exception to block processing
+                raise SecurityException(
+                    f"Message blocked due to security threats: "
+                    f"{', '.join(str(t.threat_type) for t in validation_result.threats)}"
+                )
+
+            # Use sanitized message if PII was redacted
+            if validation_result.sanitized_message != message_content:
+                logger.info(
+                    f"Message sanitized (PII redacted): {lead.lead_id}",
+                    extra={"lead_id": lead.lead_id}
+                )
+                message_content = validation_result.sanitized_message
+
+        # Step 1: Add incoming message to lead history
         incoming_message = Message(
             lead_id=lead.lead_id,
             role=MessageRole.LEAD,
@@ -164,23 +209,23 @@ class ConversationOrchestrator:
         lead.add_message(incoming_message)
 
         try:
-            # Step 1: CLASSIFY the message
-            logger.info("Step 1/3: Classifying message")
+            # Step 2: CLASSIFY the message
+            logger.info("Step 2/4: Classifying message")
             classification = await self.classifier.classify(message_content, lead)
 
             # Update lead with new signals
             for signal in classification.new_signals:
                 lead.add_signal(signal)
 
-            # Step 2: DIRECT - determine strategy
-            logger.info("Step 2/3: Determining strategy")
+            # Step 3: DIRECT - determine strategy
+            logger.info("Step 3/4: Determining strategy")
             strategy = await self.director.decide_next_move(lead, classification)
 
-            # Step 3: EXECUTE - generate response
-            logger.info("Step 3/3: Generating response")
+            # Step 4: EXECUTE - generate response
+            logger.info("Step 4/4: Generating response")
             execution = await self.executor.craft_message(lead, strategy)
 
-            # Step 4: Add assistant response to lead history
+            # Step 5: Add assistant response to lead history
             assistant_message = Message(
                 lead_id=lead.lead_id,
                 role=MessageRole.ASSISTANT,
@@ -188,7 +233,7 @@ class ConversationOrchestrator:
             )
             lead.add_message(assistant_message)
 
-            # Step 5: Persist to MongoDB (if repositories initialized)
+            # Step 6: Persist to MongoDB (if repositories initialized)
             if self.lead_repo and self.message_repo:
                 logger.debug("Persisting lead and messages to MongoDB")
 

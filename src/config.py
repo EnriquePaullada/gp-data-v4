@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     enable_structured_logging: bool = False  # Set to True for production JSON logs
 
+    # Security Validation
+    enable_security_validation: bool = True
+    max_message_length: int = 5000  # Maximum message length in characters
+    block_prompt_injection: bool = True
+    block_context_flooding: bool = True
+    block_profanity: bool = False  # Set to True to block profane messages
+    block_injection_attempts: bool = True  # SQL, XSS, command injection
+
     # ============================================
     # ENVIRONMENT
     # ============================================
