@@ -7,6 +7,7 @@ __pycache__/
 gp_data_v4.egg-info/
 build/
 dist/
+MASTER_CONTEXT.md
 
 # --- Environment & Secrets ---
 .venv/

@@ -103,6 +103,38 @@ class Settings(BaseSettings):
         validation_alias="TWILIO_WHATSAPP_FROM",
         description="Your Twilio WhatsApp number (format: whatsapp:+16205828564)"
     )
+    twilio_validate_signature: bool = Field(
+        default=True,
+        description="Validate Twilio webhook signatures for security"
+    )
+
+    # ============================================
+    # RATE LIMITING & ABUSE DETECTION
+    # ============================================
+    rate_limit_max_requests: int = Field(
+        default=10,
+        description="Maximum messages per lead per time window"
+    )
+    rate_limit_window_seconds: int = Field(
+        default=3600,
+        description="Rate limit time window in seconds (default: 1 hour)"
+    )
+    rate_limit_spike_threshold: int = Field(
+        default=5,
+        description="Number of messages that trigger spike detection"
+    )
+    rate_limit_spike_window_seconds: int = Field(
+        default=60,
+        description="Time window for spike detection in seconds (default: 1 minute)"
+    )
+    rate_limit_ban_duration_seconds: int = Field(
+        default=3600,
+        description="Default ban duration in seconds (default: 1 hour)"
+    )
+    rate_limit_auto_ban_on_spike: bool = Field(
+        default=True,
+        description="Automatically ban leads that trigger spike detection"
+    )
 
 
 @lru_cache()

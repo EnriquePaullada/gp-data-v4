@@ -5,7 +5,7 @@ Interactive command-line tool to test the orchestrator with real conversations.
 import asyncio
 from loguru import logger
 from src.core.conversation_orchestrator import ConversationOrchestrator
-from src.models.lead import Lead, SalesStage
+from src.models.lead import Lead
 from src.utils.observability import configure_logging
 
 
