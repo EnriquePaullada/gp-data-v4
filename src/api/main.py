@@ -14,6 +14,7 @@ from src.config import settings
 from src.repositories import db_manager
 from src.services.twilio_service import twilio_service
 from src.message_queue import InMemoryQueue, QueueWorker, QueuedMessage
+from src.utils.rate_limiter import InMemoryRateLimiter
 
 
 # Message processing handler
@@ -87,6 +88,15 @@ async def lifespan(app: FastAPI):
     # Initialize message queue
     queue = InMemoryQueue()
 
+    # Initialize rate limiter
+    rate_limiter = InMemoryRateLimiter(
+        max_requests=settings.rate_limit_max_requests,
+        window_seconds=settings.rate_limit_window_seconds,
+        spike_threshold=settings.rate_limit_spike_threshold,
+        spike_window_seconds=settings.rate_limit_spike_window_seconds,
+        ban_duration_seconds=settings.rate_limit_ban_duration_seconds
+    )
+
     # Start background worker
     worker = QueueWorker(
         queue=queue,
@@ -99,6 +109,7 @@ async def lifespan(app: FastAPI):
     app.state.orchestrator = orchestrator
     app.state.queue = queue
     app.state.worker = worker
+    app.state.rate_limiter = rate_limiter
 
     # Start worker in background
     import asyncio
@@ -260,8 +271,94 @@ async def twilio_webhook(
     )
 
     try:
-        # Get queue from app state
+        # Get rate limiter and queue from app state
+        rate_limiter: InMemoryRateLimiter = request.app.state.rate_limiter
         queue: InMemoryQueue = request.app.state.queue
+
+        # Check if lead is banned
+        is_banned = await rate_limiter.is_banned(phone)
+        if is_banned:
+            ban_info = await rate_limiter.get_ban_info(phone)
+            if ban_info:
+                ban_until, ban_reason = ban_info
+
+                logger.warning(
+                    f"🚫 Blocked message from banned lead",
+                    extra={"phone": phone, "ban_reason": ban_reason}
+                )
+
+                # Send ban notification to user
+                await twilio_service.send_whatsapp_message(
+                    to_number=phone,
+                    message=f"Your account is temporarily restricted. Please try again later."
+                )
+
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "status": "banned",
+                        "phone": phone,
+                        "ban_until": ban_until.isoformat(),
+                        "reason": ban_reason
+                    }
+                )
+
+        # Check rate limit
+        rate_limit_result = await rate_limiter.check_rate_limit(phone)
+
+        if not rate_limit_result.allowed:
+            logger.warning(
+                f"⚠️ Rate limit exceeded",
+                extra={
+                    "phone": phone,
+                    "reason": rate_limit_result.reason
+                }
+            )
+
+            return JSONResponse(
+                status_code=429,
+                headers={
+                    "X-RateLimit-Limit": str(settings.rate_limit_max_requests),
+                    "X-RateLimit-Remaining": str(rate_limit_result.remaining),
+                    "X-RateLimit-Reset": str(int(rate_limit_result.reset_at.timestamp())),
+                    "Retry-After": str(rate_limit_result.retry_after)
+                },
+                content={
+                    "status": "rate_limited",
+                    "phone": phone,
+                    "retry_after": rate_limit_result.retry_after,
+                    "reason": rate_limit_result.reason
+                }
+            )
+
+        # Detect spike and auto-ban if configured
+        if settings.rate_limit_auto_ban_on_spike:
+            spike_detected = await rate_limiter.detect_spike(phone)
+            if spike_detected:
+                await rate_limiter.ban_lead(
+                    phone,
+                    settings.rate_limit_ban_duration_seconds,
+                    "Spike detected: Too many messages in short period"
+                )
+
+                logger.warning(
+                    f"🚫 Lead auto-banned due to spike",
+                    extra={"phone": phone}
+                )
+
+                await twilio_service.send_whatsapp_message(
+                    to_number=phone,
+                    message="You've been sending too many messages. Your account is temporarily restricted."
+                )
+
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "status": "banned",
+                        "phone": phone,
+                        "reason": "Spike detected"
+                    }
+                )
 
         # Create queued message
         queued_message = QueuedMessage(
@@ -280,12 +377,18 @@ async def twilio_webhook(
             extra={
                 "phone": phone,
                 "message_id": message_id,
-                "queue_id": queued_message.id
+                "queue_id": queued_message.id,
+                "rate_limit_remaining": rate_limit_result.remaining
             }
         )
 
         return JSONResponse(
             status_code=200,
+            headers={
+                "X-RateLimit-Limit": str(settings.rate_limit_max_requests),
+                "X-RateLimit-Remaining": str(rate_limit_result.remaining),
+                "X-RateLimit-Reset": str(int(rate_limit_result.reset_at.timestamp()))
+            },
             content={
                 "status": "queued",
                 "message_id": message_id,

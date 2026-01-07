@@ -39,6 +39,23 @@ def mock_queue():
     return queue
 
 
+@pytest.fixture
+def mock_rate_limiter():
+    """Create mock rate limiter that allows all requests."""
+    from src.utils.rate_limiter import RateLimitResult
+    from datetime import datetime, timedelta, timezone
+
+    rate_limiter = MagicMock()
+    rate_limiter.is_banned = AsyncMock(return_value=False)
+    rate_limiter.check_rate_limit = AsyncMock(return_value=RateLimitResult(
+        allowed=True,
+        remaining=9,
+        reset_at=datetime.now(timezone.utc) + timedelta(hours=1)
+    ))
+    rate_limiter.detect_spike = AsyncMock(return_value=False)
+    return rate_limiter
+
+
 class TestHealthEndpoints:
     """Test health check and readiness endpoints."""
 
@@ -164,10 +181,11 @@ class TestTwilioWebhook:
         )
 
     @pytest.mark.asyncio
-    async def test_twilio_webhook_success(self, client, valid_twilio_payload, mock_queue):
+    async def test_twilio_webhook_success(self, client, valid_twilio_payload, mock_queue, mock_rate_limiter):
         """Test successful webhook enqueueing."""
-        # Mock the queue
+        # Mock the queue and rate limiter
         app.state.queue = mock_queue
+        app.state.rate_limiter = mock_rate_limiter
 
         response = client.post("/webhooks/twilio", data=valid_twilio_payload)
 
@@ -191,11 +209,12 @@ class TestTwilioWebhook:
         assert call_args.profile_name == "Carlos Rodriguez"
 
     @pytest.mark.asyncio
-    async def test_twilio_webhook_with_security_exception(self, client, valid_twilio_payload, mock_queue):
+    async def test_twilio_webhook_with_security_exception(self, client, valid_twilio_payload, mock_queue, mock_rate_limiter):
         """Test webhook enqueueing (security validation happens in worker)."""
         # Note: Security validation now happens in the worker, not in the webhook endpoint
         # The webhook just enqueues the message
         app.state.queue = mock_queue
+        app.state.rate_limiter = mock_rate_limiter
 
         response = client.post("/webhooks/twilio", data=valid_twilio_payload)
 
@@ -245,9 +264,10 @@ class TestTwilioWebhook:
         assert response.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_twilio_webhook_phone_extraction(self, client, valid_twilio_payload, mock_queue):
+    async def test_twilio_webhook_phone_extraction(self, client, valid_twilio_payload, mock_queue, mock_rate_limiter):
         """Test that phone number is correctly extracted from WhatsApp format."""
         app.state.queue = mock_queue
+        app.state.rate_limiter = mock_rate_limiter
 
         response = client.post("/webhooks/twilio", data=valid_twilio_payload)
 
@@ -259,7 +279,7 @@ class TestTwilioWebhook:
         assert "whatsapp:" not in call_args.phone
 
     @pytest.mark.asyncio
-    async def test_twilio_webhook_no_profile_name(self, client, mock_queue):
+    async def test_twilio_webhook_no_profile_name(self, client, mock_queue, mock_rate_limiter):
         """Test webhook when ProfileName is not provided."""
         payload = {
             "MessageSid": "SM123",
@@ -272,6 +292,7 @@ class TestTwilioWebhook:
         }
 
         app.state.queue = mock_queue
+        app.state.rate_limiter = mock_rate_limiter
 
         response = client.post("/webhooks/twilio", data=payload)
 
