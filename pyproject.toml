@@ -39,6 +39,6 @@ dev = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 filterwarnings = [
-    # Ignore deprecation warning from mongomock library (third-party)
-    "ignore:datetime.datetime.utcnow\\(\\) is deprecated:DeprecationWarning:mongomock.helpers",
+    # Ignore deprecation warnings from mongomock library (third-party)
+    "ignore::DeprecationWarning:mongomock",
 ]
