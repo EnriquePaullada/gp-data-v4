@@ -15,6 +15,7 @@ from src.repositories import db_manager
 from src.services.twilio_service import twilio_service
 from src.message_queue import InMemoryQueue, QueueWorker, QueuedMessage
 from src.utils.rate_limiter import InMemoryRateLimiter
+from src.utils.twilio_signature import validate_twilio_signature
 
 
 # Message processing handler
@@ -218,23 +219,26 @@ async def twilio_webhook(
     WaId: str = Form(None),
     ApiVersion: str = Form(None),
     SmsStatus: str = Form(None),
-    MessagingServiceSid: str = Form(None)
+    MessagingServiceSid: str = Form(None),
+    X_Twilio_Signature: str = Form(None)
 ):
     """
     Twilio WhatsApp webhook endpoint.
 
     Flow:
-    1. Receive incoming WhatsApp message from Twilio
-    2. Enqueue message for async processing
-    3. Return 200 OK immediately to acknowledge receipt
-    4. Background worker processes through 3-agent pipeline
-    5. Background worker sends response via Twilio
+    1. Validate Twilio webhook signature (security)
+    2. Receive incoming WhatsApp message from Twilio
+    3. Enqueue message for async processing
+    4. Return 200 OK immediately to acknowledge receipt
+    5. Background worker processes through 3-agent pipeline
+    6. Background worker sends response via Twilio
 
     Request format: application/x-www-form-urlencoded (Twilio standard)
     Response format: JSON (acknowledgment)
 
     Args:
         All parameters from Twilio webhook payload
+        X_Twilio_Signature: Signature header for validation
 
     Returns:
         JSON response acknowledging receipt
@@ -243,6 +247,75 @@ async def twilio_webhook(
         This endpoint returns immediately after enqueueing.
         Actual processing happens asynchronously in the background.
     """
+    # Validate Twilio signature if enabled
+    if settings.twilio_validate_signature:
+        if not settings.twilio_auth_token:
+            logger.error("❌ TWILIO_AUTH_TOKEN not configured but signature validation is enabled")
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "error": "Webhook authentication not configured"
+                }
+            )
+
+        # Get signature from header
+        signature = request.headers.get("X-Twilio-Signature")
+
+        if not signature:
+            logger.warning("🚫 Missing X-Twilio-Signature header")
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "status": "unauthorized",
+                    "error": "Missing signature header"
+                }
+            )
+
+        # Build params dict from form data
+        params = {
+            "MessageSid": MessageSid,
+            "AccountSid": AccountSid,
+            "From": From,
+            "To": To,
+            "Body": Body,
+            "NumMedia": NumMedia,
+        }
+        if ProfileName:
+            params["ProfileName"] = ProfileName
+        if WaId:
+            params["WaId"] = WaId
+        if ApiVersion:
+            params["ApiVersion"] = ApiVersion
+        if SmsStatus:
+            params["SmsStatus"] = SmsStatus
+        if MessagingServiceSid:
+            params["MessagingServiceSid"] = MessagingServiceSid
+
+        # Validate signature
+        url = str(request.url)
+        is_valid = validate_twilio_signature(
+            url=url,
+            params=params,
+            signature=signature,
+            auth_token=settings.twilio_auth_token
+        )
+
+        if not is_valid:
+            logger.warning(
+                "🚫 Invalid Twilio signature",
+                extra={"url": url}
+            )
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "status": "unauthorized",
+                    "error": "Invalid signature"
+                }
+            )
+
+        logger.debug("✅ Twilio signature validated successfully")
+
     # Parse webhook payload
     payload = TwilioWebhookPayload(
         MessageSid=MessageSid,

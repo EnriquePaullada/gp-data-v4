@@ -103,6 +103,10 @@ class Settings(BaseSettings):
         validation_alias="TWILIO_WHATSAPP_FROM",
         description="Your Twilio WhatsApp number (format: whatsapp:+16205828564)"
     )
+    twilio_validate_signature: bool = Field(
+        default=True,
+        description="Validate Twilio webhook signatures for security"
+    )
 
     # ============================================
     # RATE LIMITING & ABUSE DETECTION

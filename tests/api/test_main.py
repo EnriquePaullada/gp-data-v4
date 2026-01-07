@@ -13,6 +13,14 @@ from src.models.classifier_response import ClassifierResponse, Intent
 from src.models.director_response import DirectorResponse, StrategicAction, MessageStrategy
 from src.models.executor_response import ExecutorResponse, OutboundMessage
 from src.repositories import db_manager
+from src.config import settings
+
+
+# Disable signature validation for tests
+@pytest.fixture(autouse=True)
+def disable_signature_validation(monkeypatch):
+    """Disable Twilio signature validation for all tests."""
+    monkeypatch.setattr(settings, "twilio_validate_signature", False)
 
 
 @pytest.fixture
@@ -301,6 +309,102 @@ class TestTwilioWebhook:
         # Should use phone number as fallback name
         call_args = mock_queue.enqueue.call_args[0][0]
         assert call_args.profile_name == "+1234567890"
+
+
+class TestTwilioSignatureValidation:
+    """Test Twilio signature validation in webhook endpoint."""
+
+    @pytest.fixture
+    def test_payload(self):
+        """Create test Twilio webhook payload."""
+        return {
+            "MessageSid": "SM1234567890abcdef",
+            "AccountSid": "AC1234567890abcdef",
+            "From": "whatsapp:+5215538899800",
+            "To": "whatsapp:+14155238886",
+            "Body": "I need pricing for 20 users",
+            "NumMedia": "0",
+            "ProfileName": "Carlos Rodriguez",
+        }
+
+    @pytest.mark.asyncio
+    async def test_webhook_with_valid_signature(self, client, test_payload, mock_queue, mock_rate_limiter, monkeypatch):
+        """Test webhook accepts request with valid signature."""
+        from src.utils.twilio_signature import TwilioSignatureValidator
+
+        # Enable signature validation
+        monkeypatch.setattr(settings, "twilio_validate_signature", True)
+        monkeypatch.setattr(settings, "twilio_auth_token", "test_token")
+
+        # Compute valid signature
+        validator = TwilioSignatureValidator("test_token")
+        url = "http://testserver/webhooks/twilio"
+        params = {k: str(v) for k, v in test_payload.items()}
+        valid_signature = validator.compute_signature(url, params)
+
+        # Setup mocks
+        app.state.queue = mock_queue
+        app.state.rate_limiter = mock_rate_limiter
+
+        # Make request with valid signature
+        response = client.post(
+            "/webhooks/twilio",
+            data=test_payload,
+            headers={"X-Twilio-Signature": valid_signature}
+        )
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_webhook_rejects_invalid_signature(self, client, test_payload, monkeypatch):
+        """Test webhook rejects request with invalid signature."""
+        # Enable signature validation
+        monkeypatch.setattr(settings, "twilio_validate_signature", True)
+        monkeypatch.setattr(settings, "twilio_auth_token", "test_token")
+
+        # Make request with invalid signature
+        response = client.post(
+            "/webhooks/twilio",
+            data=test_payload,
+            headers={"X-Twilio-Signature": "invalid_signature"}
+        )
+
+        assert response.status_code == 401
+        data = response.json()
+        assert data["status"] == "unauthorized"
+        assert "Invalid signature" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_webhook_rejects_missing_signature(self, client, test_payload, monkeypatch):
+        """Test webhook rejects request without signature header."""
+        # Enable signature validation
+        monkeypatch.setattr(settings, "twilio_validate_signature", True)
+        monkeypatch.setattr(settings, "twilio_auth_token", "test_token")
+
+        # Make request without signature header
+        response = client.post("/webhooks/twilio", data=test_payload)
+
+        assert response.status_code == 401
+        data = response.json()
+        assert data["status"] == "unauthorized"
+        assert "Missing signature" in data["error"]
+
+    @pytest.mark.asyncio
+    async def test_webhook_error_when_auth_token_not_configured(self, client, test_payload, monkeypatch):
+        """Test webhook returns error if auth token not configured but validation enabled."""
+        # Enable signature validation but no auth token
+        monkeypatch.setattr(settings, "twilio_validate_signature", True)
+        monkeypatch.setattr(settings, "twilio_auth_token", None)
+
+        response = client.post(
+            "/webhooks/twilio",
+            data=test_payload,
+            headers={"X-Twilio-Signature": "some_signature"}
+        )
+
+        assert response.status_code == 500
+        data = response.json()
+        assert data["status"] == "error"
 
 
 class TestTwilioModels:
