@@ -9,7 +9,6 @@ import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from collections import defaultdict
 
 from src.message_queue.base import (
     MessageQueue,

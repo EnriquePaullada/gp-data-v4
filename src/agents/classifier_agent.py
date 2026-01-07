@@ -4,7 +4,7 @@ from src.models.classifier_response import ClassifierResponse, Intent, UrgencyLe
 from src.models.intelligence import Sentiment
 from src.models.lead import Lead
 from src.config import get_settings
-from src.utils.llm_client import run_agent_with_retry, run_agent_with_fallback
+from src.utils.llm_client import run_agent_with_fallback
 from src.utils.cost_tracker import get_cost_tracker
 from src.utils.observability import log_agent_execution, log_llm_call
 import datetime as dt

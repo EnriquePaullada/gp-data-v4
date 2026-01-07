@@ -7,8 +7,8 @@ to prevent unauthorized requests and replay attacks.
 
 import hmac
 import hashlib
-from typing import Dict, Optional
-from urllib.parse import urljoin
+import base64
+from typing import Dict
 from loguru import logger
 
 
@@ -91,7 +91,6 @@ class TwilioSignatureValidator:
         )
 
         # Return base64-encoded signature
-        import base64
         return base64.b64encode(mac.digest()).decode('utf-8')
 
 
