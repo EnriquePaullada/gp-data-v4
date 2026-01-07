@@ -30,6 +30,15 @@ def mock_orchestrator():
     return orchestrator
 
 
+@pytest.fixture
+def mock_queue():
+    """Create mock message queue."""
+    queue = MagicMock()
+    queue.enqueue = AsyncMock(return_value="msg-123")
+    queue.get_metrics = AsyncMock()
+    return queue
+
+
 class TestHealthEndpoints:
     """Test health check and readiness endpoints."""
 
@@ -155,96 +164,61 @@ class TestTwilioWebhook:
         )
 
     @pytest.mark.asyncio
-    async def test_twilio_webhook_success(self, client, valid_twilio_payload, mock_orchestrator, mock_orchestration_result):
-        """Test successful webhook processing."""
-        # Mock lead repository
-        mock_lead = Lead(
-            lead_id="+5215538899800",
-            full_name="Carlos Rodriguez"
-        )
-        mock_orchestrator.lead_repo.get_or_create = AsyncMock(return_value=mock_lead)
+    async def test_twilio_webhook_success(self, client, valid_twilio_payload, mock_queue):
+        """Test successful webhook enqueueing."""
+        # Mock the queue
+        app.state.queue = mock_queue
 
-        # Mock process_message
-        mock_orchestrator.process_message = AsyncMock(return_value=mock_orchestration_result)
+        response = client.post("/webhooks/twilio", data=valid_twilio_payload)
 
-        # Mock Twilio service
-        app.state.orchestrator = mock_orchestrator
-        with patch("src.api.main.twilio_service.send_whatsapp_message", new_callable=AsyncMock) as mock_send:
-            mock_send.return_value = "SM123456789"
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/json"
 
-            response = client.post("/webhooks/twilio", data=valid_twilio_payload)
+        # Verify JSON response
+        data = response.json()
+        assert data["status"] == "queued"
+        assert data["message_id"] == "msg-123"
+        assert data["phone"] == "+5215538899800"
 
-            assert response.status_code == 200
-            assert response.headers["content-type"] == "application/json"
+        # Verify message was enqueued
+        mock_queue.enqueue.assert_called_once()
 
-            # Verify JSON response
-            data = response.json()
-            assert data["status"] == "success"
-            assert data["message_sid"] == "SM123456789"
-            assert data["phone"] == "+5215538899800"
-
-            # Verify orchestrator was called correctly
-            mock_orchestrator.lead_repo.get_or_create.assert_called_once_with(
-                phone_number="+5215538899800",
-                full_name="Carlos Rodriguez"
-            )
-            mock_orchestrator.process_message.assert_called_once()
-
-            # Verify Twilio API was called
-            mock_send.assert_called_once_with(
-                to_number="+5215538899800",
-                message="Thank you for your interest! I'd be happy to discuss pricing for your team of 20 users."
-            )
+        # Verify the queued message has correct data
+        call_args = mock_queue.enqueue.call_args[0][0]
+        assert call_args.phone == "+5215538899800"
+        assert call_args.body == "I need pricing for 20 users"
+        assert call_args.message_sid == "SM1234567890abcdef"
+        assert call_args.profile_name == "Carlos Rodriguez"
 
     @pytest.mark.asyncio
-    async def test_twilio_webhook_with_security_exception(self, client, valid_twilio_payload, mock_orchestrator):
-        """Test webhook when security threat is detected."""
-        mock_lead = Lead(lead_id="+5215538899800", full_name="Test")
-        mock_orchestrator.lead_repo.get_or_create = AsyncMock(return_value=mock_lead)
+    async def test_twilio_webhook_with_security_exception(self, client, valid_twilio_payload, mock_queue):
+        """Test webhook enqueueing (security validation happens in worker)."""
+        # Note: Security validation now happens in the worker, not in the webhook endpoint
+        # The webhook just enqueues the message
+        app.state.queue = mock_queue
 
-        # Mock security exception
-        mock_orchestrator.process_message = AsyncMock(
-            side_effect=SecurityException("Prompt injection detected")
-        )
+        response = client.post("/webhooks/twilio", data=valid_twilio_payload)
 
-        app.state.orchestrator = mock_orchestrator
-        with patch("src.api.main.twilio_service.send_whatsapp_message", new_callable=AsyncMock) as mock_send:
-            mock_send.return_value = "SM123456789"
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "queued"
 
-            response = client.post("/webhooks/twilio", data=valid_twilio_payload)
-
-            assert response.status_code == 200
-            assert "application/json" in response.headers["content-type"]
-
-            # Verify JSON response
-            data = response.json()
-            assert data["status"] == "security_error"
-            assert data["phone"] == "+5215538899800"
-
-            # Verify error message was sent via Twilio
-            mock_send.assert_called_once_with(
-                to_number="+5215538899800",
-                message="I'm sorry, but I cannot process that message. Please rephrase your question."
-            )
+        # Message should still be enqueued - security check happens in worker
+        mock_queue.enqueue.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_twilio_webhook_with_processing_error(self, client, valid_twilio_payload, mock_orchestrator):
-        """Test webhook when processing fails."""
-        mock_lead = Lead(lead_id="+5215538899800", full_name="Test")
-        mock_orchestrator.lead_repo.get_or_create = AsyncMock(return_value=mock_lead)
+    async def test_twilio_webhook_with_processing_error(self, client, valid_twilio_payload, mock_queue):
+        """Test webhook when enqueueing fails."""
+        # Mock queue.enqueue to raise exception
+        mock_queue.enqueue = AsyncMock(side_effect=Exception("Queue full"))
 
-        # Mock generic exception
-        mock_orchestrator.process_message = AsyncMock(
-            side_effect=Exception("OpenAI API error")
-        )
-
-        app.state.orchestrator = mock_orchestrator
+        app.state.queue = mock_queue
         with patch("src.api.main.twilio_service.send_whatsapp_message", new_callable=AsyncMock) as mock_send:
             mock_send.return_value = "SM123456789"
 
             response = client.post("/webhooks/twilio", data=valid_twilio_payload)
 
-            assert response.status_code == 200
+            assert response.status_code == 500  # Queue error returns 500
             assert "application/json" in response.headers["content-type"]
 
             # Verify JSON response
@@ -271,27 +245,21 @@ class TestTwilioWebhook:
         assert response.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_twilio_webhook_phone_extraction(self, client, valid_twilio_payload, mock_orchestrator, mock_orchestration_result):
+    async def test_twilio_webhook_phone_extraction(self, client, valid_twilio_payload, mock_queue):
         """Test that phone number is correctly extracted from WhatsApp format."""
-        mock_lead = Lead(lead_id="+5215538899800", full_name="Test")
-        mock_orchestrator.lead_repo.get_or_create = AsyncMock(return_value=mock_lead)
-        mock_orchestrator.process_message = AsyncMock(return_value=mock_orchestration_result)
+        app.state.queue = mock_queue
 
-        app.state.orchestrator = mock_orchestrator
-        with patch("src.api.main.twilio_service.send_whatsapp_message", new_callable=AsyncMock) as mock_send:
-            mock_send.return_value = "SM123456789"
+        response = client.post("/webhooks/twilio", data=valid_twilio_payload)
 
-            response = client.post("/webhooks/twilio", data=valid_twilio_payload)
+        assert response.status_code == 200
 
-            assert response.status_code == 200
-
-            # Verify phone was cleaned (removed "whatsapp:" prefix)
-            call_args = mock_orchestrator.lead_repo.get_or_create.call_args
-            assert call_args[1]["phone_number"] == "+5215538899800"
-            assert "whatsapp:" not in call_args[1]["phone_number"]
+        # Verify phone was cleaned (removed "whatsapp:" prefix)
+        call_args = mock_queue.enqueue.call_args[0][0]
+        assert call_args.phone == "+5215538899800"
+        assert "whatsapp:" not in call_args.phone
 
     @pytest.mark.asyncio
-    async def test_twilio_webhook_no_profile_name(self, client, mock_orchestrator, mock_orchestration_result):
+    async def test_twilio_webhook_no_profile_name(self, client, mock_queue):
         """Test webhook when ProfileName is not provided."""
         payload = {
             "MessageSid": "SM123",
@@ -303,21 +271,15 @@ class TestTwilioWebhook:
             # No ProfileName
         }
 
-        mock_lead = Lead(lead_id="+1234567890", full_name="+1234567890")
-        mock_orchestrator.lead_repo.get_or_create = AsyncMock(return_value=mock_lead)
-        mock_orchestrator.process_message = AsyncMock(return_value=mock_orchestration_result)
+        app.state.queue = mock_queue
 
-        app.state.orchestrator = mock_orchestrator
-        with patch("src.api.main.twilio_service.send_whatsapp_message", new_callable=AsyncMock) as mock_send:
-            mock_send.return_value = "SM123456789"
+        response = client.post("/webhooks/twilio", data=payload)
 
-            response = client.post("/webhooks/twilio", data=payload)
+        assert response.status_code == 200
 
-            assert response.status_code == 200
-
-            # Should use phone number as fallback name
-            call_args = mock_orchestrator.lead_repo.get_or_create.call_args
-            assert call_args[1]["full_name"] == "+1234567890"
+        # Should use phone number as fallback name
+        call_args = mock_queue.enqueue.call_args[0][0]
+        assert call_args.profile_name == "+1234567890"
 
 
 class TestTwilioModels:
