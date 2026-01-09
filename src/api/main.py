@@ -1,33 +1,31 @@
 """
 FastAPI Application
-Main entry point for webhook API and admin endpoints.
+
+Main entry point for the GP Data v4 API.
+Handles application lifecycle and router mounting.
 """
-import uuid
-from fastapi import FastAPI, Request, Form
-from fastapi.responses import Response, JSONResponse
+import asyncio
 from contextlib import asynccontextmanager
+from fastapi import FastAPI
 from loguru import logger
 
 from src.core.conversation_orchestrator import ConversationOrchestrator
-from src.api.models.twilio import TwilioWebhookPayload
 from src.config import settings
-from src.repositories import db_manager
-from src.services.twilio_service import twilio_service
 from src.message_queue import InMemoryQueue, QueueWorker, QueuedMessage
 from src.utils.rate_limiter import InMemoryRateLimiter
-from src.utils.twilio_signature import validate_twilio_signature
+from src.services.twilio_service import twilio_service
+from src.api.routes import health_router, webhooks_router, metrics_router
 
 
-# Message processing handler
 async def process_webhook_message(message: QueuedMessage) -> None:
     """
-    Process a queued webhook message.
+    Process a queued webhook message through the 3-agent pipeline.
 
     This function is called by the queue worker for each message.
-    It handles the full 3-agent pipeline and sends the response.
+    It handles lead loading, pipeline processing, and response sending.
 
     Args:
-        message: Queued webhook message
+        message: Queued webhook message with phone, body, and metadata
 
     Raises:
         Exception: If processing fails (triggers retry logic)
@@ -46,7 +44,7 @@ async def process_webhook_message(message: QueuedMessage) -> None:
     result = await orchestrator.process_message(message.body, lead)
 
     logger.info(
-        f"✅ Message processed successfully",
+        "Message processed successfully",
         extra={
             "phone": message.phone,
             "intent": result.classification.intent,
@@ -62,27 +60,23 @@ async def process_webhook_message(message: QueuedMessage) -> None:
     )
 
 
-# Lifespan context manager for startup/shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Manage application lifecycle: startup and shutdown events.
 
     Startup:
-    - Initialize ConversationOrchestrator
-    - Connect to MongoDB
-    - Create database indexes
-    - Initialize message queue
-    - Start background worker
+    - Initialize ConversationOrchestrator (connects to MongoDB)
+    - Initialize message queue and rate limiter
+    - Start background queue worker
 
     Shutdown:
-    - Stop background worker
+    - Stop background worker gracefully
     - Disconnect from MongoDB
-    - Cleanup resources
     """
-    logger.info("🚀 Starting GP Data API server...")
+    logger.info("Starting GP Data API server...")
 
-    # Initialize orchestrator
+    # Initialize orchestrator (connects to MongoDB, creates indexes)
     orchestrator = ConversationOrchestrator()
     await orchestrator.initialize()
 
@@ -98,7 +92,7 @@ async def lifespan(app: FastAPI):
         ban_duration_seconds=settings.rate_limit_ban_duration_seconds
     )
 
-    # Start background worker
+    # Create background worker
     worker = QueueWorker(
         queue=queue,
         handler=process_webhook_message,
@@ -113,21 +107,18 @@ async def lifespan(app: FastAPI):
     app.state.rate_limiter = rate_limiter
 
     # Start worker in background
-    import asyncio
     worker_task = asyncio.create_task(worker.start())
     app.state.worker_task = worker_task
 
-    logger.info("✅ API server ready to receive webhooks")
+    logger.info("API server ready to receive webhooks")
 
     yield
 
     # Shutdown
-    logger.info("🔌 Shutting down API server...")
+    logger.info("Shutting down API server...")
 
-    # Stop worker
     await worker.stop()
 
-    # Cancel worker task if still running
     if not worker_task.done():
         worker_task.cancel()
         try:
@@ -136,7 +127,7 @@ async def lifespan(app: FastAPI):
             pass
 
     await orchestrator.shutdown()
-    logger.info("✅ Shutdown complete")
+    logger.info("Shutdown complete")
 
 
 # Create FastAPI application
@@ -147,405 +138,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-
-@app.get("/health")
-async def health_check():
-    """
-    Basic health check endpoint.
-
-    Returns 200 if service is running.
-    Used by load balancers and monitoring systems.
-    """
-    return {
-        "status": "healthy",
-        "service": "gp-data-v4",
-        "version": "1.3.0"
-    }
-
-
-@app.get("/ready")
-async def readiness_check(request: Request):
-    """
-    Readiness probe - checks if service can handle requests.
-
-    Verifies:
-    - MongoDB connection is active
-    - Orchestrator is initialized
-
-    Returns 200 if ready, 503 if not ready.
-    """
-    try:
-        # Check orchestrator is initialized
-        orchestrator = request.app.state.orchestrator
-        if not orchestrator.lead_repo or not orchestrator.message_repo:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "status": "not_ready",
-                    "reason": "Repositories not initialized"
-                }
-            )
-
-        # Check MongoDB connection
-        await db_manager.client.admin.command("ping")
-
-        return {
-            "status": "ready",
-            "mongodb": "connected",
-            "orchestrator": "initialized"
-        }
-
-    except Exception as e:
-        logger.error(f"Readiness check failed: {e}")
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "not_ready",
-                "reason": str(e)
-            }
-        )
-
-
-@app.post("/webhooks/twilio")
-async def twilio_webhook(
-    request: Request,
-    MessageSid: str = Form(...),
-    AccountSid: str = Form(...),
-    From: str = Form(...),
-    To: str = Form(...),
-    Body: str = Form(...),
-    NumMedia: str = Form(default="0"),
-    ProfileName: str = Form(None),
-    WaId: str = Form(None),
-    ApiVersion: str = Form(None),
-    SmsStatus: str = Form(None),
-    MessagingServiceSid: str = Form(None),
-    X_Twilio_Signature: str = Form(None)
-):
-    """
-    Twilio WhatsApp webhook endpoint.
-
-    Flow:
-    1. Validate Twilio webhook signature (security)
-    2. Receive incoming WhatsApp message from Twilio
-    3. Enqueue message for async processing
-    4. Return 200 OK immediately to acknowledge receipt
-    5. Background worker processes through 3-agent pipeline
-    6. Background worker sends response via Twilio
-
-    Request format: application/x-www-form-urlencoded (Twilio standard)
-    Response format: JSON (acknowledgment)
-
-    Args:
-        All parameters from Twilio webhook payload
-        X_Twilio_Signature: Signature header for validation
-
-    Returns:
-        JSON response acknowledging receipt
-
-    Note:
-        This endpoint returns immediately after enqueueing.
-        Actual processing happens asynchronously in the background.
-    """
-    # Validate Twilio signature if enabled
-    if settings.twilio_validate_signature:
-        if not settings.twilio_auth_token:
-            logger.error("❌ TWILIO_AUTH_TOKEN not configured but signature validation is enabled")
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "status": "error",
-                    "error": "Webhook authentication not configured"
-                }
-            )
-
-        # Get signature from header
-        signature = request.headers.get("X-Twilio-Signature")
-
-        if not signature:
-            logger.warning("🚫 Missing X-Twilio-Signature header")
-            return JSONResponse(
-                status_code=401,
-                content={
-                    "status": "unauthorized",
-                    "error": "Missing signature header"
-                }
-            )
-
-        # Build params dict from form data
-        params = {
-            "MessageSid": MessageSid,
-            "AccountSid": AccountSid,
-            "From": From,
-            "To": To,
-            "Body": Body,
-            "NumMedia": NumMedia,
-        }
-        if ProfileName:
-            params["ProfileName"] = ProfileName
-        if WaId:
-            params["WaId"] = WaId
-        if ApiVersion:
-            params["ApiVersion"] = ApiVersion
-        if SmsStatus:
-            params["SmsStatus"] = SmsStatus
-        if MessagingServiceSid:
-            params["MessagingServiceSid"] = MessagingServiceSid
-
-        # Validate signature
-        url = str(request.url)
-        is_valid = validate_twilio_signature(
-            url=url,
-            params=params,
-            signature=signature,
-            auth_token=settings.twilio_auth_token
-        )
-
-        if not is_valid:
-            logger.warning(
-                "🚫 Invalid Twilio signature",
-                extra={"url": url}
-            )
-            return JSONResponse(
-                status_code=401,
-                content={
-                    "status": "unauthorized",
-                    "error": "Invalid signature"
-                }
-            )
-
-        logger.debug("✅ Twilio signature validated successfully")
-
-    # Parse webhook payload
-    payload = TwilioWebhookPayload(
-        MessageSid=MessageSid,
-        AccountSid=AccountSid,
-        From=From,
-        To=To,
-        Body=Body,
-        NumMedia=NumMedia,
-        ProfileName=ProfileName,
-        WaId=WaId,
-        ApiVersion=ApiVersion,
-        SmsStatus=SmsStatus,
-        MessagingServiceSid=MessagingServiceSid
-    )
-
-    phone = payload.get_clean_phone()
-    profile_name = payload.get_profile_name()
-
-    logger.info(
-        f"📱 Incoming WhatsApp message",
-        extra={
-            "phone": phone,
-            "message_sid": payload.MessageSid,
-            "body_length": len(payload.Body)
-        }
-    )
-
-    try:
-        # Get rate limiter and queue from app state
-        rate_limiter: InMemoryRateLimiter = request.app.state.rate_limiter
-        queue: InMemoryQueue = request.app.state.queue
-
-        # Check if lead is banned
-        is_banned = await rate_limiter.is_banned(phone)
-        if is_banned:
-            ban_info = await rate_limiter.get_ban_info(phone)
-            if ban_info:
-                ban_until, ban_reason = ban_info
-
-                logger.warning(
-                    f"🚫 Blocked message from banned lead",
-                    extra={"phone": phone, "ban_reason": ban_reason}
-                )
-
-                # Send ban notification to user
-                await twilio_service.send_whatsapp_message(
-                    to_number=phone,
-                    message=f"Your account is temporarily restricted. Please try again later."
-                )
-
-                return JSONResponse(
-                    status_code=429,
-                    content={
-                        "status": "banned",
-                        "phone": phone,
-                        "ban_until": ban_until.isoformat(),
-                        "reason": ban_reason
-                    }
-                )
-
-        # Check rate limit
-        rate_limit_result = await rate_limiter.check_rate_limit(phone)
-
-        if not rate_limit_result.allowed:
-            logger.warning(
-                f"⚠️ Rate limit exceeded",
-                extra={
-                    "phone": phone,
-                    "reason": rate_limit_result.reason
-                }
-            )
-
-            return JSONResponse(
-                status_code=429,
-                headers={
-                    "X-RateLimit-Limit": str(settings.rate_limit_max_requests),
-                    "X-RateLimit-Remaining": str(rate_limit_result.remaining),
-                    "X-RateLimit-Reset": str(int(rate_limit_result.reset_at.timestamp())),
-                    "Retry-After": str(rate_limit_result.retry_after)
-                },
-                content={
-                    "status": "rate_limited",
-                    "phone": phone,
-                    "retry_after": rate_limit_result.retry_after,
-                    "reason": rate_limit_result.reason
-                }
-            )
-
-        # Detect spike and auto-ban if configured
-        if settings.rate_limit_auto_ban_on_spike:
-            spike_detected = await rate_limiter.detect_spike(phone)
-            if spike_detected:
-                await rate_limiter.ban_lead(
-                    phone,
-                    settings.rate_limit_ban_duration_seconds,
-                    "Spike detected: Too many messages in short period"
-                )
-
-                logger.warning(
-                    f"🚫 Lead auto-banned due to spike",
-                    extra={"phone": phone}
-                )
-
-                await twilio_service.send_whatsapp_message(
-                    to_number=phone,
-                    message="You've been sending too many messages. Your account is temporarily restricted."
-                )
-
-                return JSONResponse(
-                    status_code=429,
-                    content={
-                        "status": "banned",
-                        "phone": phone,
-                        "reason": "Spike detected"
-                    }
-                )
-
-        # Create queued message
-        queued_message = QueuedMessage(
-            id=str(uuid.uuid4()),
-            phone=phone,
-            body=payload.Body,
-            profile_name=profile_name,
-            message_sid=payload.MessageSid
-        )
-
-        # Enqueue for async processing
-        message_id = await queue.enqueue(queued_message)
-
-        logger.info(
-            f"✅ Message enqueued for processing",
-            extra={
-                "phone": phone,
-                "message_id": message_id,
-                "queue_id": queued_message.id,
-                "rate_limit_remaining": rate_limit_result.remaining
-            }
-        )
-
-        return JSONResponse(
-            status_code=200,
-            headers={
-                "X-RateLimit-Limit": str(settings.rate_limit_max_requests),
-                "X-RateLimit-Remaining": str(rate_limit_result.remaining),
-                "X-RateLimit-Reset": str(int(rate_limit_result.reset_at.timestamp()))
-            },
-            content={
-                "status": "queued",
-                "message_id": message_id,
-                "phone": phone
-            }
-        )
-
-    except Exception as e:
-        logger.error(
-            f"❌ Failed to enqueue webhook",
-            extra={"phone": phone, "error": str(e)},
-            exc_info=True
-        )
-
-        # Try to send immediate error message
-        try:
-            await twilio_service.send_whatsapp_message(
-                to_number=phone,
-                message="I'm experiencing technical difficulties. Please try again in a moment."
-            )
-        except Exception as send_error:
-            logger.error(
-                f"❌ Failed to send error message",
-                extra={"phone": phone, "error": str(send_error)},
-                exc_info=True
-            )
-
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "phone": phone,
-                "error": str(e)
-            }
-        )
-
-
-@app.get("/metrics/queue")
-async def queue_metrics(request: Request):
-    """
-    Get message queue metrics.
-
-    Returns statistics about queue performance:
-    - Pending messages
-    - Messages being processed
-    - Completed messages
-    - Failed messages
-    - Dead letter queue size
-    - Average processing time
-    - Error rate
-
-    Returns:
-        Queue metrics as JSON
-    """
-    try:
-        queue: InMemoryQueue = request.app.state.queue
-        metrics = await queue.get_metrics()
-
-        return {
-            "status": "ok",
-            "metrics": metrics.model_dump()
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to get queue metrics: {e}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "error": str(e)
-            }
-        )
-
-
-@app.get("/")
-async def root():
-    """Root endpoint with API information."""
-    return {
-        "service": "GP Data v4 API",
-        "version": "1.3.0",
-        "endpoints": {
-            "health": "/health",
-            "ready": "/ready",
-            "twilio_webhook": "/webhooks/twilio (POST)",
-            "queue_metrics": "/metrics/queue"
-        }
-    }
+# Mount routers
+app.include_router(health_router)
+app.include_router(webhooks_router)
+app.include_router(metrics_router)
