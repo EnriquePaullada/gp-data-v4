@@ -160,13 +160,11 @@ class Histogram:
         with self._lock:
             for key, data in self._values.items():
                 base_labels = dict(key)
-                cumulative = 0
 
-                # Bucket values (cumulative)
+                # Bucket values (already cumulative from observe())
                 for bucket in sorted(self.buckets):
-                    cumulative += data["buckets"][bucket]
                     result.append(MetricValue(
-                        value=cumulative,
+                        value=data["buckets"][bucket],
                         labels={**base_labels, "le": str(bucket)}
                     ))
 

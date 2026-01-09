@@ -82,6 +82,7 @@ async def root():
         "endpoints": {
             "health": "/health",
             "ready": "/ready",
+            "metrics": "/metrics",
             "twilio_webhook": "/webhooks/twilio (POST)",
             "queue_metrics": "/metrics/queue"
         }
