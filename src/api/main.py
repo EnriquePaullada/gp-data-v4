@@ -143,7 +143,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="GP Data v4 API",
     description="WhatsApp sales assistant API with 3-agent architecture",
-    version="1.2.0",
+    version="1.3.0",
     lifespan=lifespan
 )
 
@@ -159,7 +159,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "gp-data-v4",
-        "version": "1.2.0"
+        "version": "1.3.0"
     }
 
 
@@ -541,7 +541,7 @@ async def root():
     """Root endpoint with API information."""
     return {
         "service": "GP Data v4 API",
-        "version": "1.2.0",
+        "version": "1.3.0",
         "endpoints": {
             "health": "/health",
             "ready": "/ready",
