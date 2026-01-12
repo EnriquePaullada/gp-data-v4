@@ -152,6 +152,22 @@ class Settings(BaseSettings):
         description="Separator used when concatenating buffered messages"
     )
 
+    # ============================================
+    # CIRCUIT BREAKER (LLM Degradation)
+    # ============================================
+    circuit_breaker_failure_threshold: int = Field(
+        default=5,
+        description="Consecutive failures before circuit opens"
+    )
+    circuit_breaker_recovery_timeout: float = Field(
+        default=60.0,
+        description="Seconds before attempting recovery probe"
+    )
+    circuit_breaker_half_open_max_calls: int = Field(
+        default=1,
+        description="Max probe calls in half-open state"
+    )
+
 
 @lru_cache()
 def get_settings() -> Settings:
