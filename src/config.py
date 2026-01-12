@@ -136,6 +136,22 @@ class Settings(BaseSettings):
         description="Automatically ban leads that trigger spike detection"
     )
 
+    # ============================================
+    # MESSAGE BUFFERING
+    # ============================================
+    message_buffer_seconds: float = Field(
+        default=10.0,
+        description="Seconds to wait for additional messages before processing"
+    )
+    message_buffer_max_messages: int = Field(
+        default=20,
+        description="Maximum messages to buffer per lead before force-flush"
+    )
+    message_buffer_separator: str = Field(
+        default="\n",
+        description="Separator used when concatenating buffered messages"
+    )
+
 
 @lru_cache()
 def get_settings() -> Settings:
