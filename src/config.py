@@ -168,6 +168,22 @@ class Settings(BaseSettings):
         description="Max probe calls in half-open state"
     )
 
+    # ============================================
+    # FOLLOW-UP PROMPTS (Lead Re-engagement)
+    # ============================================
+    followup_initial_delay_hours: int = Field(
+        default=24,
+        description="Hours after last interaction before first follow-up"
+    )
+    followup_max_attempts: int = Field(
+        default=3,
+        description="Maximum follow-up attempts before marking lead cold"
+    )
+    followup_escalation_hours: list[int] = Field(
+        default=[24, 48, 72],
+        description="Hours between follow-up attempts (escalating)"
+    )
+
 
 @lru_cache()
 def get_settings() -> Settings:
