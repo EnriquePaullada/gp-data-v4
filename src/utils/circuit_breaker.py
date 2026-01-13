@@ -9,8 +9,8 @@ immediately without hitting the API.
 import asyncio
 from enum import Enum
 from datetime import datetime, timezone
-from dataclasses import dataclass, field
-from typing import Optional, Callable, TypeVar, Awaitable, Any
+from dataclasses import dataclass
+from typing import Optional, Callable, TypeVar, Awaitable
 from src.config import get_settings
 from src.utils.observability import logger
 

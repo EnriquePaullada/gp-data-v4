@@ -22,12 +22,16 @@ def client():
 
 
 @pytest.fixture
-def mock_queue():
-    """Create mock message queue."""
-    queue = MagicMock()
-    queue.enqueue = AsyncMock(return_value="msg-123")
-    queue.get_metrics = AsyncMock()
-    return queue
+def mock_message_buffer():
+    """Create mock message buffer."""
+    buffer = MagicMock()
+    buffer.add = AsyncMock()
+    buffer.flush_all = AsyncMock()
+    buffer.get_buffer_stats = AsyncMock(return_value={
+        "pending_leads": 0,
+        "total_buffered_messages": 0
+    })
+    return buffer
 
 
 @pytest.fixture
@@ -66,11 +70,11 @@ class TestTwilioWebhook:
     """Tests for /webhooks/twilio endpoint."""
 
     @pytest.mark.asyncio
-    async def test_webhook_enqueues_message(
-        self, client, valid_twilio_payload, mock_queue, mock_rate_limiter
+    async def test_webhook_buffers_message(
+        self, client, valid_twilio_payload, mock_message_buffer, mock_rate_limiter
     ):
-        """Test webhook successfully enqueues message."""
-        app.state.queue = mock_queue
+        """Test webhook successfully buffers message."""
+        app.state.message_buffer = mock_message_buffer
         app.state.rate_limiter = mock_rate_limiter
 
         response = client.post("/webhooks/twilio", data=valid_twilio_payload)
@@ -79,46 +83,46 @@ class TestTwilioWebhook:
         assert response.headers["content-type"] == "application/json"
 
         data = response.json()
-        assert data["status"] == "queued"
-        assert data["message_id"] == "msg-123"
+        assert data["status"] == "buffered"
+        assert data["message_sid"] == "SM1234567890abcdef"
         assert data["phone"] == "+5215538899800"
 
-        mock_queue.enqueue.assert_called_once()
+        mock_message_buffer.add.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_webhook_extracts_phone_correctly(
-        self, client, valid_twilio_payload, mock_queue, mock_rate_limiter
+        self, client, valid_twilio_payload, mock_message_buffer, mock_rate_limiter
     ):
         """Test that phone number is correctly extracted from WhatsApp format."""
-        app.state.queue = mock_queue
+        app.state.message_buffer = mock_message_buffer
         app.state.rate_limiter = mock_rate_limiter
 
         response = client.post("/webhooks/twilio", data=valid_twilio_payload)
 
         assert response.status_code == 200
 
-        call_args = mock_queue.enqueue.call_args[0][0]
-        assert call_args.phone == "+5215538899800"
-        assert "whatsapp:" not in call_args.phone
+        call_kwargs = mock_message_buffer.add.call_args[1]
+        assert call_kwargs["phone"] == "+5215538899800"
+        assert "whatsapp:" not in call_kwargs["phone"]
 
     @pytest.mark.asyncio
     async def test_webhook_uses_profile_name(
-        self, client, valid_twilio_payload, mock_queue, mock_rate_limiter
+        self, client, valid_twilio_payload, mock_message_buffer, mock_rate_limiter
     ):
         """Test webhook uses ProfileName from payload."""
-        app.state.queue = mock_queue
+        app.state.message_buffer = mock_message_buffer
         app.state.rate_limiter = mock_rate_limiter
 
         response = client.post("/webhooks/twilio", data=valid_twilio_payload)
 
         assert response.status_code == 200
 
-        call_args = mock_queue.enqueue.call_args[0][0]
-        assert call_args.profile_name == "Carlos Rodriguez"
+        call_kwargs = mock_message_buffer.add.call_args[1]
+        assert call_kwargs["profile_name"] == "Carlos Rodriguez"
 
     @pytest.mark.asyncio
     async def test_webhook_falls_back_to_phone_for_name(
-        self, client, mock_queue, mock_rate_limiter
+        self, client, mock_message_buffer, mock_rate_limiter
     ):
         """Test webhook uses phone number when ProfileName not provided."""
         payload = {
@@ -130,15 +134,15 @@ class TestTwilioWebhook:
             "NumMedia": "0",
         }
 
-        app.state.queue = mock_queue
+        app.state.message_buffer = mock_message_buffer
         app.state.rate_limiter = mock_rate_limiter
 
         response = client.post("/webhooks/twilio", data=payload)
 
         assert response.status_code == 200
 
-        call_args = mock_queue.enqueue.call_args[0][0]
-        assert call_args.profile_name == "+1234567890"
+        call_kwargs = mock_message_buffer.add.call_args[1]
+        assert call_kwargs["profile_name"] == "+1234567890"
 
     def test_webhook_rejects_missing_required_fields(self, client):
         """Test webhook returns 422 for missing required fields."""
@@ -151,12 +155,13 @@ class TestTwilioWebhook:
         assert response.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_webhook_handles_queue_error(
-        self, client, valid_twilio_payload, mock_queue
+    async def test_webhook_handles_buffer_error(
+        self, client, valid_twilio_payload, mock_message_buffer, mock_rate_limiter
     ):
-        """Test webhook handles queue error gracefully."""
-        mock_queue.enqueue = AsyncMock(side_effect=Exception("Queue full"))
-        app.state.queue = mock_queue
+        """Test webhook handles buffer error gracefully."""
+        mock_message_buffer.add = AsyncMock(side_effect=Exception("Buffer error"))
+        app.state.message_buffer = mock_message_buffer
+        app.state.rate_limiter = mock_rate_limiter
 
         with patch(
             "src.api.routes.webhooks.twilio_service.send_whatsapp_message",
@@ -174,10 +179,10 @@ class TestTwilioWebhook:
 
     @pytest.mark.asyncio
     async def test_webhook_includes_rate_limit_headers(
-        self, client, valid_twilio_payload, mock_queue, mock_rate_limiter
+        self, client, valid_twilio_payload, mock_message_buffer, mock_rate_limiter
     ):
         """Test webhook includes rate limit headers in response."""
-        app.state.queue = mock_queue
+        app.state.message_buffer = mock_message_buffer
         app.state.rate_limiter = mock_rate_limiter
 
         response = client.post("/webhooks/twilio", data=valid_twilio_payload)
@@ -193,7 +198,7 @@ class TestRateLimiting:
 
     @pytest.mark.asyncio
     async def test_webhook_rejects_rate_limited_request(
-        self, client, valid_twilio_payload, mock_queue
+        self, client, valid_twilio_payload, mock_message_buffer
     ):
         """Test webhook returns 429 when rate limited."""
         from datetime import datetime, timezone
@@ -208,7 +213,7 @@ class TestRateLimiting:
             reason="Rate limit exceeded"
         ))
 
-        app.state.queue = mock_queue
+        app.state.message_buffer = mock_message_buffer
         app.state.rate_limiter = rate_limiter
 
         response = client.post("/webhooks/twilio", data=valid_twilio_payload)
@@ -219,7 +224,7 @@ class TestRateLimiting:
 
     @pytest.mark.asyncio
     async def test_webhook_rejects_banned_lead(
-        self, client, valid_twilio_payload, mock_queue
+        self, client, valid_twilio_payload, mock_message_buffer
     ):
         """Test webhook returns 429 for banned leads."""
         from datetime import datetime, timezone
@@ -231,7 +236,7 @@ class TestRateLimiting:
             "Abuse detected"
         ))
 
-        app.state.queue = mock_queue
+        app.state.message_buffer = mock_message_buffer
         app.state.rate_limiter = rate_limiter
 
         with patch(
@@ -263,7 +268,7 @@ class TestSignatureValidation:
 
     @pytest.mark.asyncio
     async def test_accepts_valid_signature(
-        self, client, test_payload, mock_queue, mock_rate_limiter, monkeypatch
+        self, client, test_payload, mock_message_buffer, mock_rate_limiter, monkeypatch
     ):
         """Test webhook accepts request with valid signature."""
         from src.utils.twilio_signature import TwilioSignatureValidator
@@ -276,7 +281,7 @@ class TestSignatureValidation:
         params = {k: str(v) for k, v in test_payload.items()}
         valid_signature = validator.compute_signature(url, params)
 
-        app.state.queue = mock_queue
+        app.state.message_buffer = mock_message_buffer
         app.state.rate_limiter = mock_rate_limiter
 
         response = client.post(
