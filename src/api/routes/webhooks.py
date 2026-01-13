@@ -2,9 +2,8 @@
 Webhook Endpoints
 
 Twilio WhatsApp webhook handler with signature validation,
-rate limiting, and async queue processing.
+rate limiting, and message buffering for burst handling.
 """
-import uuid
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import JSONResponse
 from loguru import logger
@@ -12,7 +11,7 @@ from loguru import logger
 from src.api.models.twilio import TwilioWebhookPayload
 from src.config import settings
 from src.services.twilio_service import twilio_service
-from src.message_queue import InMemoryQueue, QueuedMessage
+from src.message_queue.buffer import MessageBuffer
 from src.utils.rate_limiter import InMemoryRateLimiter
 from src.utils.twilio_signature import validate_twilio_signature
 
@@ -157,9 +156,9 @@ async def twilio_webhook(
     )
 
     try:
-        # Get rate limiter and queue from app state
+        # Get rate limiter and message buffer from app state
         rate_limiter: InMemoryRateLimiter = request.app.state.rate_limiter
-        queue: InMemoryQueue = request.app.state.queue
+        message_buffer: MessageBuffer = request.app.state.message_buffer
 
         # Check if lead is banned
         is_banned = await rate_limiter.is_banned(phone)
@@ -246,24 +245,20 @@ async def twilio_webhook(
                     }
                 )
 
-        # Create queued message
-        queued_message = QueuedMessage(
-            id=str(uuid.uuid4()),
+        # Add to message buffer (handles WhatsApp burst messages)
+        # Buffer will concatenate rapid messages and enqueue after delay
+        await message_buffer.add(
             phone=phone,
             body=payload.Body,
-            profile_name=profile_name,
-            message_sid=payload.MessageSid
+            message_sid=payload.MessageSid,
+            profile_name=profile_name
         )
 
-        # Enqueue for async processing
-        message_id = await queue.enqueue(queued_message)
-
         logger.info(
-            f"Message enqueued for processing",
+            "Message buffered for processing",
             extra={
                 "phone": phone,
-                "message_id": message_id,
-                "queue_id": queued_message.id,
+                "message_sid": payload.MessageSid,
                 "rate_limit_remaining": rate_limit_result.remaining
             }
         )
@@ -276,8 +271,8 @@ async def twilio_webhook(
                 "X-RateLimit-Reset": str(int(rate_limit_result.reset_at.timestamp()))
             },
             content={
-                "status": "queued",
-                "message_id": message_id,
+                "status": "buffered",
+                "message_sid": payload.MessageSid,
                 "phone": phone
             }
         )

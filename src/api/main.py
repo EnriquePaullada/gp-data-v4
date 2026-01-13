@@ -12,6 +12,7 @@ from loguru import logger
 from src.core.conversation_orchestrator import ConversationOrchestrator
 from src.config import settings
 from src.message_queue import InMemoryQueue, QueueWorker, QueuedMessage
+from src.message_queue.buffer import MessageBuffer
 from src.utils.rate_limiter import InMemoryRateLimiter
 from src.services.twilio_service import twilio_service
 from src.api.routes import health_router, webhooks_router, metrics_router
@@ -60,6 +61,49 @@ async def process_webhook_message(message: QueuedMessage) -> None:
     )
 
 
+async def on_buffer_flush(
+    phone: str,
+    combined_body: str,
+    first_message_sid: str,
+    profile_name: str | None
+) -> None:
+    """
+    Callback when message buffer flushes for a lead.
+
+    Creates a QueuedMessage from the buffered messages and enqueues
+    it for processing through the 3-agent pipeline.
+
+    Args:
+        phone: Lead phone number (E.164)
+        combined_body: Concatenated message bodies
+        first_message_sid: SID of first message in burst
+        profile_name: WhatsApp profile name
+    """
+    import uuid
+    from src.api.main import app
+
+    queue: InMemoryQueue = app.state.queue
+
+    queued_message = QueuedMessage(
+        id=str(uuid.uuid4()),
+        phone=phone,
+        body=combined_body,
+        profile_name=profile_name,
+        message_sid=first_message_sid
+    )
+
+    message_id = await queue.enqueue(queued_message)
+
+    logger.info(
+        "Buffered messages enqueued",
+        extra={
+            "phone": phone,
+            "message_id": message_id,
+            "body_length": len(combined_body)
+        }
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -92,6 +136,9 @@ async def lifespan(app: FastAPI):
         ban_duration_seconds=settings.rate_limit_ban_duration_seconds
     )
 
+    # Initialize message buffer for WhatsApp burst handling
+    message_buffer = MessageBuffer(on_flush=on_buffer_flush)
+
     # Create background worker
     worker = QueueWorker(
         queue=queue,
@@ -105,6 +152,7 @@ async def lifespan(app: FastAPI):
     app.state.queue = queue
     app.state.worker = worker
     app.state.rate_limiter = rate_limiter
+    app.state.message_buffer = message_buffer
 
     # Start worker in background
     worker_task = asyncio.create_task(worker.start())
@@ -116,6 +164,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down API server...")
+
+    # Flush any pending buffered messages before stopping worker
+    logger.info("Flushing message buffer...")
+    await message_buffer.flush_all()
 
     await worker.stop()
 
