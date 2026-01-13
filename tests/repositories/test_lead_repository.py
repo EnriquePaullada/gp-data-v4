@@ -21,21 +21,21 @@ async def lead_repo():
     await db_manager.create_indexes()
     db = db_manager.database
 
-    # Clean up test data before each test
-    await db.leads.delete_many({"lead_id": {"$regex": "^\\+test"}})
+    # Clean up test data before each test (using test US numbers)
+    await db.leads.delete_many({"lead_id": {"$regex": "^\\+1999"}})
 
     repo = LeadRepository(db)
     yield repo
 
     # Cleanup after test
-    await db.leads.delete_many({"lead_id": {"$regex": "^\\+test"}})
+    await db.leads.delete_many({"lead_id": {"$regex": "^\\+1999"}})
 
 
 @pytest.fixture
 def sample_lead() -> Lead:
-    """Provide a sample Lead instance for testing."""
+    """Provide a sample Lead instance for testing with valid E.164 number."""
     return Lead(
-        lead_id="+test5215538899800",
+        lead_id="+19995550001",
         full_name="Carlos Test",
         current_stage=SalesStage.DISCOVERY
     )
@@ -138,7 +138,7 @@ class TestLeadRepositoryBusinessQueries:
 
     async def test_get_by_phone_nonexistent(self, lead_repo: LeadRepository):
         """Should return None for non-existent phone number."""
-        result = await lead_repo.get_by_phone("+test9999999999")
+        result = await lead_repo.get_by_phone("+19995550009999999999")
 
         assert result is None
 
@@ -157,7 +157,7 @@ class TestLeadRepositoryBusinessQueries:
 
     async def test_get_or_create_new(self, lead_repo: LeadRepository):
         """Should create new lead if not found."""
-        phone = "+test5219999999999"
+        phone = "+19995550005219999999999"
 
         result = await lead_repo.get_or_create(phone, full_name="New Lead")
 
@@ -184,7 +184,7 @@ class TestLeadRepositoryBusinessQueries:
     async def test_update_stage_nonexistent(self, lead_repo: LeadRepository):
         """Should return False when updating non-existent lead stage."""
         result = await lead_repo.update_stage(
-            "+test9999999999",
+            "+19995550009999999999",
             SalesStage.QUALIFIED
         )
 
@@ -198,9 +198,9 @@ class TestLeadRepositoryAnalyticsQueries:
         """Should retrieve all leads in a specific stage."""
         # Create leads in different stages
         leads: List[Lead] = [
-            Lead(lead_id="+test1", current_stage=SalesStage.DISCOVERY),
-            Lead(lead_id="+test2", current_stage=SalesStage.DISCOVERY),
-            Lead(lead_id="+test3", current_stage=SalesStage.QUALIFIED),
+            Lead(lead_id="+19995550001", current_stage=SalesStage.DISCOVERY),
+            Lead(lead_id="+19995550002", current_stage=SalesStage.DISCOVERY),
+            Lead(lead_id="+19995550003", current_stage=SalesStage.QUALIFIED),
         ]
 
         for lead in leads:
@@ -220,9 +220,9 @@ class TestLeadRepositoryAnalyticsQueries:
 
         # Create leads with different follow-up times
         leads: List[Lead] = [
-            Lead(lead_id="+test1", next_followup_at=past),  # Overdue
-            Lead(lead_id="+test2", next_followup_at=future),  # Future
-            Lead(lead_id="+test3", next_followup_at=None),  # No follow-up
+            Lead(lead_id="+19995550001", next_followup_at=past),  # Overdue
+            Lead(lead_id="+19995550002", next_followup_at=future),  # Future
+            Lead(lead_id="+19995550003", next_followup_at=None),  # No follow-up
         ]
 
         for lead in leads:
@@ -232,7 +232,7 @@ class TestLeadRepositoryAnalyticsQueries:
         overdue_leads = await lead_repo.get_leads_needing_followup(before=now)
 
         assert len(overdue_leads) == 1
-        assert overdue_leads[0].lead_id == "+test1"
+        assert overdue_leads[0].lead_id == "+19995550001"
 
     async def test_get_stale_leads(self, lead_repo: LeadRepository):
         """Should find leads with no recent activity."""
@@ -243,17 +243,17 @@ class TestLeadRepositoryAnalyticsQueries:
         # Create leads with different activity dates
         leads: List[Lead] = [
             Lead(
-                lead_id="+test1",
+                lead_id="+19995550001",
                 last_interaction_at=old_date,
                 current_stage=SalesStage.DISCOVERY
             ),
             Lead(
-                lead_id="+test2",
+                lead_id="+19995550002",
                 last_interaction_at=recent_date,
                 current_stage=SalesStage.DISCOVERY
             ),
             Lead(
-                lead_id="+test3",
+                lead_id="+19995550003",
                 last_interaction_at=old_date,
                 current_stage=SalesStage.WON  # Should be excluded
             ),
@@ -266,23 +266,23 @@ class TestLeadRepositoryAnalyticsQueries:
         stale_leads = await lead_repo.get_stale_leads(days_inactive=30)
 
         assert len(stale_leads) == 1
-        assert stale_leads[0].lead_id == "+test1"
+        assert stale_leads[0].lead_id == "+19995550001"
 
     async def test_get_high_intent_leads(self, lead_repo: LeadRepository):
         """Should retrieve engaged leads with high message count."""
         leads: List[Lead] = [
             Lead(
-                lead_id="+test1",
+                lead_id="+19995550001",
                 message_count=10,
                 current_stage=SalesStage.QUALIFIED
             ),
             Lead(
-                lead_id="+test2",
+                lead_id="+19995550002",
                 message_count=2,
                 current_stage=SalesStage.QUALIFIED
             ),
             Lead(
-                lead_id="+test3",
+                lead_id="+19995550003",
                 message_count=15,
                 current_stage=SalesStage.WON  # Wrong stage
             ),
@@ -295,15 +295,15 @@ class TestLeadRepositoryAnalyticsQueries:
         high_intent = await lead_repo.get_high_intent_leads(min_message_count=5)
 
         assert len(high_intent) == 1
-        assert high_intent[0].lead_id == "+test1"
+        assert high_intent[0].lead_id == "+19995550001"
 
     async def test_count_by_stage(self, lead_repo: LeadRepository):
         """Should return lead count for each pipeline stage."""
         leads: List[Lead] = [
-            Lead(lead_id="+test1", current_stage=SalesStage.NEW),
-            Lead(lead_id="+test2", current_stage=SalesStage.NEW),
-            Lead(lead_id="+test3", current_stage=SalesStage.DISCOVERY),
-            Lead(lead_id="+test4", current_stage=SalesStage.WON),
+            Lead(lead_id="+19995550001", current_stage=SalesStage.NEW),
+            Lead(lead_id="+19995550002", current_stage=SalesStage.NEW),
+            Lead(lead_id="+19995550003", current_stage=SalesStage.DISCOVERY),
+            Lead(lead_id="+19995550004", current_stage=SalesStage.WON),
         ]
 
         for lead in leads:
@@ -389,6 +389,38 @@ class TestLeadRepositorySaveUpsert:
 
         assert len(saved_lead.signals) == 1
         assert saved_lead.signals[0].dimension == BANTDimension.BUDGET
+
+
+class TestPhoneNormalization:
+    """Test phone number normalization in lead repository."""
+
+    async def test_get_or_create_normalizes_mexico_mobile(self, lead_repo: LeadRepository):
+        """Mexico mobile with old +52 1 format should normalize to standard."""
+        # Create with old format
+        lead1 = await lead_repo.get_or_create("+5215512345678")
+        # Look up with new format
+        lead2 = await lead_repo.get_or_create("+525512345678")
+
+        # Should be the same lead (normalized)
+        assert lead1.id == lead2.id
+        assert lead1.lead_id == "+525512345678"
+
+    async def test_get_by_phone_normalizes(self, lead_repo: LeadRepository):
+        """get_by_phone should normalize input before lookup."""
+        # Create with formatted number
+        lead = Lead(lead_id="+525512345678", full_name="Test")
+        await lead_repo.create(lead)
+
+        # Look up with different format (with spaces)
+        found = await lead_repo.get_by_phone("+52 55 1234 5678")
+        assert found is not None
+        assert found.lead_id == "+525512345678"
+
+    async def test_handles_invalid_phone_gracefully(self, lead_repo: LeadRepository):
+        """Invalid phone numbers should be stored as-is."""
+        # This isn't a valid phone but should not crash
+        lead = await lead_repo.get_or_create("invalid-phone")
+        assert lead.lead_id == "invalid-phone"
 
 
 @pytest.fixture(scope="function", autouse=True)

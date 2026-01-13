@@ -9,6 +9,7 @@ import datetime as dt
 from .base import BaseRepository
 from ..models.lead import Lead, SalesStage
 from ..utils.observability import logger
+from ..utils.phone_normalizer import normalize_phone, PhoneNormalizationError
 
 
 class LeadRepository(BaseRepository[Lead]):
@@ -21,17 +22,37 @@ class LeadRepository(BaseRepository[Lead]):
         """Initialize Lead repository with database connection."""
         super().__init__(database, "leads", Lead)
 
-    async def get_by_phone(self, phone_number: str) -> Optional[Lead]:
+    def _normalize_phone(self, phone_number: str) -> str:
         """
-        Retrieve a Lead by their E.164 phone number.
+        Normalize phone number to E.164 format.
 
         Args:
-            phone_number: E.164 formatted phone number (e.g., "+5215538899800")
+            phone_number: Phone number in any format
+
+        Returns:
+            E.164 formatted phone number
+
+        Raises:
+            PhoneNormalizationError: If phone cannot be normalized
+        """
+        try:
+            return normalize_phone(phone_number)
+        except PhoneNormalizationError:
+            logger.warning(f"Could not normalize phone: {phone_number}, using as-is")
+            return phone_number
+
+    async def get_by_phone(self, phone_number: str) -> Optional[Lead]:
+        """
+        Retrieve a Lead by their phone number.
+
+        Args:
+            phone_number: Phone number (will be normalized to E.164)
 
         Returns:
             Lead instance or None if not found
         """
-        return await self.find_one({"lead_id": phone_number})
+        normalized = self._normalize_phone(phone_number)
+        return await self.find_one({"lead_id": normalized})
 
     async def get_or_create(self, phone_number: str, full_name: Optional[str] = None) -> Lead:
         """
@@ -39,28 +60,29 @@ class LeadRepository(BaseRepository[Lead]):
         Idempotent operation for conversation initialization.
 
         Args:
-            phone_number: E.164 formatted phone number
+            phone_number: Phone number (will be normalized to E.164)
             full_name: Optional lead name for new leads
 
         Returns:
             Lead instance (existing or newly created)
         """
-        existing_lead = await self.get_by_phone(phone_number)
+        normalized_phone = self._normalize_phone(phone_number)
+        existing_lead = await self.find_one({"lead_id": normalized_phone})
 
         if existing_lead:
-            logger.debug(f"Found existing lead: {phone_number}")
+            logger.debug(f"Found existing lead: {normalized_phone}")
             return existing_lead
 
-        # Create new lead
+        # Create new lead with normalized phone
         new_lead = Lead(
-            lead_id=phone_number,
+            lead_id=normalized_phone,
             full_name=full_name,
             current_stage=SalesStage.NEW,
             last_interaction_at=dt.datetime.now(dt.UTC)
         )
 
         created_lead = await self.create(new_lead)
-        logger.info(f"Created new lead: {phone_number}", extra={"lead_id": phone_number})
+        logger.info(f"Created new lead: {normalized_phone}", extra={"lead_id": normalized_phone})
 
         return created_lead
 
