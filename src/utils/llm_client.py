@@ -1,14 +1,12 @@
 """
 LLM Client with Retry Logic & Error Handling
-Provides resilient LLM execution with exponential backoff and circuit breaker.
+Provides resilient LLM execution with exponential backoff.
 """
 import asyncio
-import random
 from typing import TypeVar, Any
 from loguru import logger
 from pydantic_ai import Agent
 from src.config import get_settings
-from src.utils.circuit_breaker import get_openai_circuit, CircuitState
 
 # Type variable for generic agent output
 T = TypeVar('T')
@@ -108,6 +106,7 @@ async def run_agent_with_retry(
             # Calculate exponential backoff with jitter
             wait_time = min(min_wait * (2 ** (attempt - 1)), max_wait)
             # Add 20% jitter to prevent thundering herd
+            import random
             wait_time = wait_time * (0.8 + 0.4 * random.random())
 
             logger.info(f"⏳ Retrying in {wait_time:.1f}s... (error: {error_type})")
@@ -147,48 +146,3 @@ async def run_agent_with_fallback(
     except (LLMError, LLMCriticalError) as e:
         logger.error(f"🛟 LLM failed, using fallback response: {e}")
         return fallback_factory()
-
-
-async def run_agent_with_circuit_breaker(
-    agent: Agent,
-    prompt: str,
-    fallback_factory: callable,
-    deps: Any = None
-) -> T:
-    """
-    Executes an agent with circuit breaker protection.
-
-    Combines retry logic with circuit breaker pattern for graceful degradation.
-    When OpenAI is experiencing issues, the circuit opens and returns fallback
-    responses immediately without wasting API calls.
-
-    Args:
-        agent: The PydanticAI agent to run
-        prompt: The prompt to send to the agent
-        fallback_factory: Function that returns a safe default response
-        deps: Optional dependencies for the agent
-
-    Returns:
-        Either the agent's output or the fallback response
-
-    Example:
-        >>> def safe_response():
-        >>>     return ExecutorResponse(message="I'll get back to you shortly.")
-        >>> result = await run_agent_with_circuit_breaker(agent, prompt, safe_response)
-    """
-    circuit = get_openai_circuit()
-
-    async def execute():
-        return await run_agent_with_retry(agent, prompt, deps=deps)
-
-    return await circuit.call_with_fallback(execute, fallback_factory)
-
-
-def get_circuit_status() -> dict:
-    """Get current circuit breaker status for monitoring."""
-    return get_openai_circuit().get_status()
-
-
-def is_circuit_open() -> bool:
-    """Check if circuit breaker is currently open."""
-    return get_openai_circuit().state == CircuitState.OPEN

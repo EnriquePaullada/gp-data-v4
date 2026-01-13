@@ -17,7 +17,6 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "python-multipart>=0.0.9",
     "twilio>=9.0.0",
-    "phonenumbers>=9.0.21",
 ]
 
 [build-system]

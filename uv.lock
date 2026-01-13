@@ -941,7 +941,6 @@ dependencies = [
     { name = "mongomock-motor" },
     { name = "motor" },
     { name = "openai" },
-    { name = "phonenumbers" },
     { name = "pydantic" },
     { name = "pydantic-ai" },
     { name = "pydantic-settings" },
@@ -966,7 +965,6 @@ requires-dist = [
     { name = "mongomock-motor", specifier = ">=0.0.36" },
     { name = "motor", specifier = ">=3.6.0" },
     { name = "openai", specifier = ">=1.50.0" },
-    { name = "phonenumbers", specifier = ">=9.0.21" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pydantic-ai", specifier = ">=1.39.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
@@ -1870,15 +1868,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/fa/2a/52a8da6fe965dea6192eb716b357558e103aea0a1e9a8352ad575a8406ca/pathvalidate-3.3.1.tar.gz", hash = "sha256:b18c07212bfead624345bb8e1d6141cdcf15a39736994ea0b94035ad2b1ba177", size = 63262, upload-time = "2025-06-15T09:07:20.736Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9a/70/875f4a23bfc4731703a5835487d0d2fb999031bd415e7d17c0ae615c18b7/pathvalidate-3.3.1-py3-none-any.whl", hash = "sha256:5263baab691f8e1af96092fa5137ee17df5bdfbd6cff1fcac4d6ef4bc2e1735f", size = 24305, upload-time = "2025-06-15T09:07:19.117Z" },
-]
-
-[[package]]
-name = "phonenumbers"
-version = "9.0.21"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/df/c9/15e160ae4a8a34c93a8eddd930b0a801e8826cf4df3586f19d46809e60b4/phonenumbers-9.0.21.tar.gz", hash = "sha256:df4145cba0a8b3ee9c425d5d9b5dbe1b4fceccc68b030ac549ea13c95592b602", size = 2297827, upload-time = "2025-12-18T07:37:26.495Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/37/71/364ea74338bde467bec6b6b0ab33b5ced57e473dfb427b96cc78da8e6af4/phonenumbers-9.0.21-py2.py3-none-any.whl", hash = "sha256:3a0f717fddf901a5a424f47c43fb72722cb45bd25ee87331987b00eafe6855bf", size = 2584216, upload-time = "2025-12-18T07:37:24.539Z" },
 ]
 
 [[package]]
