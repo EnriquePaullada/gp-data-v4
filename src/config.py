@@ -136,6 +136,54 @@ class Settings(BaseSettings):
         description="Automatically ban leads that trigger spike detection"
     )
 
+    # ============================================
+    # MESSAGE BUFFERING
+    # ============================================
+    message_buffer_seconds: float = Field(
+        default=10.0,
+        description="Seconds to wait for additional messages before processing"
+    )
+    message_buffer_max_messages: int = Field(
+        default=20,
+        description="Maximum messages to buffer per lead before force-flush"
+    )
+    message_buffer_separator: str = Field(
+        default="\n",
+        description="Separator used when concatenating buffered messages"
+    )
+
+    # ============================================
+    # CIRCUIT BREAKER (LLM Degradation)
+    # ============================================
+    circuit_breaker_failure_threshold: int = Field(
+        default=5,
+        description="Consecutive failures before circuit opens"
+    )
+    circuit_breaker_recovery_timeout: float = Field(
+        default=60.0,
+        description="Seconds before attempting recovery probe"
+    )
+    circuit_breaker_half_open_max_calls: int = Field(
+        default=1,
+        description="Max probe calls in half-open state"
+    )
+
+    # ============================================
+    # FOLLOW-UP PROMPTS (Lead Re-engagement)
+    # ============================================
+    followup_initial_delay_hours: int = Field(
+        default=24,
+        description="Hours after last interaction before first follow-up"
+    )
+    followup_max_attempts: int = Field(
+        default=3,
+        description="Maximum follow-up attempts before marking lead cold"
+    )
+    followup_escalation_hours: list[int] = Field(
+        default=[24, 48, 72],
+        description="Hours between follow-up attempts (escalating)"
+    )
+
 
 @lru_cache()
 def get_settings() -> Settings:
