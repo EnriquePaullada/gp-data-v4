@@ -5,7 +5,8 @@ from src.models.director_response import DirectorResponse,StrategicAction
 from src.models.lead import Lead
 from src.models.classifier_response import ClassifierResponse, Intent
 from src.config import get_settings
-from src.utils.llm_client import run_agent_with_retry
+from src.utils.llm_client import run_agent_with_circuit_breaker
+from src.utils.fallback_responses import get_fallback_strategy
 from src.utils.cost_tracker import get_cost_tracker
 from src.utils.observability import log_agent_execution, log_llm_call
 import time
@@ -109,10 +110,11 @@ class DirectorService:
         """
 
         try:
-            # Execute with retry logic
-            result = await run_agent_with_retry(
+            # Execute with circuit breaker, retry logic, and fallback
+            result = await run_agent_with_circuit_breaker(
                 agent=director_agent,
                 prompt=prompt,
+                fallback_factory=get_fallback_strategy,
                 deps=self.deps
             )
 
