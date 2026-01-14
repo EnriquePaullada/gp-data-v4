@@ -4,7 +4,8 @@ from src.models.classifier_response import ClassifierResponse, Intent, UrgencyLe
 from src.models.intelligence import Sentiment
 from src.models.lead import Lead
 from src.config import get_settings
-from src.utils.llm_client import run_agent_with_fallback
+from src.utils.llm_client import run_agent_with_circuit_breaker
+from src.utils.fallback_responses import get_fallback_classification
 from src.utils.cost_tracker import get_cost_tracker
 from src.utils.observability import log_agent_execution, log_llm_call
 import datetime as dt
@@ -60,33 +61,15 @@ class ClassifierAgent:
 
         logger.debug(f"Classifying for {lead.lead_id} with {len(lead.recent_history)} context messages.")
 
-        # 3. Define fallback for critical failures
-        def safe_fallback():
-            """Return a safe default classification when LLM completely fails."""
-            return ClassifierResponse(
-                intent=Intent.UNCLEAR,
-                intent_confidence=0.0,
-                topic="system_error",
-                topic_confidence=0.0,
-                urgency=UrgencyLevel.UNCLEAR,
-                urgency_confidence=0.0,
-                language="english",
-                sentiment=Sentiment.UNCLEAR,
-                engagement_level="low",
-                requires_human_escalation=True,
-                reasoning="LLM failure - classification unavailable. Human review required.",
-                new_signals=[]
-            )
-
         try:
-            # 4. Execute with retry logic
-            result = await run_agent_with_fallback(
+            # 3. Execute with circuit breaker, retry logic, and fallback
+            result = await run_agent_with_circuit_breaker(
                 agent=self.agent,
                 prompt=context_prompt,
-                fallback_factory=safe_fallback
+                fallback_factory=get_fallback_classification
             )
 
-            # 5. Track costs (extract usage from result if available)
+            # 4. Track costs (extract usage from result if available)
             try:
                 usage = result.usage() if hasattr(result, 'usage') else None
                 if usage:
@@ -97,7 +80,7 @@ class ClassifierAgent:
                         agent_name="ClassifierAgent"
                     )
 
-                    # 6. Structured logging
+                    # 5. Structured logging
                     duration_ms = (time.time() - start_time) * 1000
                     log_llm_call(
                         agent_name="ClassifierAgent",
@@ -111,7 +94,7 @@ class ClassifierAgent:
             except Exception as tracking_error:
                 logger.warning(f"Cost tracking failed (non-critical): {tracking_error}")
 
-            # 7. Log agent execution
+            # 6. Log agent execution
             duration_ms = (time.time() - start_time) * 1000
             log_agent_execution(
                 agent_name="ClassifierAgent",

@@ -5,6 +5,7 @@ from pydantic import Field, computed_field
 from src.models.base import MongoBaseModel
 from src.models.intelligence import IntelligenceSignal, BANTDimension
 from src.models.message import Message
+from src.config import get_settings
 
 class SalesStage(StrEnum):
     NEW = "0 - initial_contact"
@@ -68,10 +69,15 @@ class Lead(MongoBaseModel):
 
     def format_history(self, limit: int | None = None, include_roles: bool = True) -> str:
         """
-        Formats conversation history for LLM context.
+        Formats conversation history for LLM context with smart pruning.
 
         Centralizes the repeated pattern of formatting messages across all agents.
         This eliminates DRY violations and ensures consistent formatting.
+
+        Implements context pruning to prevent exceeding model context windows:
+        - Always keeps the most recent messages in full
+        - Truncates older messages if total exceeds max_context_chars
+        - Provides summary when pruning occurs
 
         Args:
             limit: Number of recent messages to include (None = all in recent_history)
@@ -84,8 +90,67 @@ class Lead(MongoBaseModel):
             >>> lead.format_history(limit=3)
             'LEAD: Hello\\nASSISTANT: Hi there!\\nLEAD: I need help'
         """
+        settings = get_settings()
         messages = self.recent_history[-limit:] if limit else self.recent_history
 
+        if not messages:
+            return ""
+
+        # Format all messages first
+        formatted_lines = []
         if include_roles:
-            return "\n".join([f"{msg.role.upper()}: {msg.content}" for msg in messages])
-        return "\n".join([msg.content for msg in messages])
+            formatted_lines = [f"{msg.role.upper()}: {msg.content}" for msg in messages]
+        else:
+            formatted_lines = [msg.content for msg in messages]
+
+        # Join and check total length
+        full_history = "\n".join(formatted_lines)
+
+        # If within limit, return as-is
+        if len(full_history) <= settings.max_context_chars:
+            return full_history
+
+        # Context pruning: keep recent messages in full, truncate older ones
+        min_recent = min(settings.min_recent_messages, len(messages))
+        recent_messages = messages[-min_recent:]
+        older_messages = messages[:-min_recent]
+
+        # Format recent messages (always kept in full)
+        if include_roles:
+            recent_lines = [f"{msg.role.upper()}: {msg.content}" for msg in recent_messages]
+        else:
+            recent_lines = [msg.content for msg in recent_messages]
+
+        recent_context = "\n".join(recent_lines)
+        remaining_chars = settings.max_context_chars - len(recent_context)
+
+        # Calculate space for older messages
+        if remaining_chars > 100 and older_messages:
+            # Format older messages with truncation
+            older_lines = []
+            summary_line = f"[Earlier conversation: {len(older_messages)} messages truncated for context limit]"
+            remaining_chars -= len(summary_line) + 2  # +2 for newlines
+
+            # Try to fit as many older messages as possible
+            chars_per_message = remaining_chars // len(older_messages)
+
+            for msg in older_messages:
+                if include_roles:
+                    content = f"{msg.role.upper()}: {msg.content}"
+                else:
+                    content = msg.content
+
+                if len(content) <= chars_per_message:
+                    older_lines.append(content)
+                else:
+                    # Truncate with ellipsis
+                    truncated = content[:chars_per_message - 3] + "..."
+                    older_lines.append(truncated)
+
+            # Combine: summary + truncated older + full recent
+            return f"{summary_line}\n" + "\n".join(older_lines) + "\n" + recent_context
+        else:
+            # Not enough space for older messages, just return recent with summary
+            pruned_count = len(older_messages)
+            summary = f"[{pruned_count} earlier messages omitted due to context limit]\n"
+            return summary + recent_context

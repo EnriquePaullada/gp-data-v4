@@ -7,9 +7,13 @@ from unittest.mock import AsyncMock, Mock, patch
 from src.utils.llm_client import (
     run_agent_with_retry,
     run_agent_with_fallback,
+    run_agent_with_circuit_breaker,
+    get_circuit_status,
+    is_circuit_open,
     LLMError,
     LLMCriticalError
 )
+from src.utils.circuit_breaker import get_openai_circuit, CircuitState
 
 
 class MockAgent:
@@ -208,3 +212,240 @@ class TestFallbackBehavior:
         assert isinstance(result, ComplexResponse)
         assert result.status == "fallback"
         assert result.data == {"key": "value"}
+
+
+@pytest.mark.asyncio
+class TestCircuitBreakerIntegration:
+    """Test suite for circuit breaker integration with LLM calls."""
+
+    async def test_circuit_breaker_success_on_first_try(self):
+        """Verifies circuit breaker allows successful calls through."""
+        # Reset circuit to clean state
+        circuit = get_openai_circuit()
+        await circuit.reset()
+
+        agent = MockAgent(should_fail=False)
+
+        def fallback_factory():
+            return "Fallback response"
+
+        result = await run_agent_with_circuit_breaker(agent, "test prompt", fallback_factory)
+
+        assert result == "Success response"
+        assert agent._call_count == 1
+        assert circuit.state == CircuitState.CLOSED
+
+    async def test_circuit_breaker_opens_after_threshold_failures(self):
+        """Verifies circuit opens after consecutive failures exceed threshold."""
+        # Reset circuit to clean state
+        circuit = get_openai_circuit()
+        await circuit.reset()
+
+        # Create agent that always fails
+        agent = MockAgent(failure_count=100, error_type="timeout")
+
+        def fallback_factory():
+            return "Fallback response"
+
+        # Make 5 consecutive failing calls (default threshold)
+        for _ in range(5):
+            try:
+                await run_agent_with_circuit_breaker(agent, "test prompt", fallback_factory)
+            except:
+                pass
+
+        # Circuit should now be open
+        assert circuit.state == CircuitState.OPEN
+
+    async def test_circuit_breaker_returns_fallback_when_open(self):
+        """Verifies circuit breaker returns fallback immediately when open."""
+        # Reset and force circuit open
+        circuit = get_openai_circuit()
+        await circuit.reset()
+        await circuit.force_open()
+
+        agent = MockAgent(should_fail=False)
+        fallback_called = False
+
+        def fallback_factory():
+            nonlocal fallback_called
+            fallback_called = True
+            return "Fallback response"
+
+        result = await run_agent_with_circuit_breaker(agent, "test prompt", fallback_factory)
+
+        # Should return fallback without calling agent
+        assert result == "Fallback response"
+        assert fallback_called is True
+        assert agent._call_count == 0  # Agent never called
+        assert circuit.state == CircuitState.OPEN
+
+    async def test_circuit_breaker_uses_retry_logic_when_closed(self):
+        """Verifies circuit breaker uses retry logic when closed."""
+        # Reset circuit
+        circuit = get_openai_circuit()
+        await circuit.reset()
+
+        # Agent fails once, then succeeds
+        agent = MockAgent(failure_count=1, error_type="timeout")
+
+        def fallback_factory():
+            return "Fallback response"
+
+        result = await run_agent_with_circuit_breaker(agent, "test prompt", fallback_factory)
+
+        # Should succeed after retry
+        assert result == "Success response"
+        assert agent._call_count == 2  # 1 failure + 1 success
+        assert circuit.state == CircuitState.CLOSED
+
+    async def test_circuit_breaker_with_deps(self):
+        """Verifies circuit breaker works with agent dependencies."""
+        # Reset circuit
+        circuit = get_openai_circuit()
+        await circuit.reset()
+
+        agent = MockAgent(should_fail=False)
+        mock_deps = {"key": "value"}
+
+        # Mock the agent's run method to accept deps
+        original_run = agent.run
+        async def run_with_deps(prompt, deps=None):
+            assert deps == mock_deps
+            return await original_run(prompt, deps)
+
+        agent.run = run_with_deps
+
+        def fallback_factory():
+            return "Fallback response"
+
+        result = await run_agent_with_circuit_breaker(
+            agent, "test prompt", fallback_factory, deps=mock_deps
+        )
+
+        assert result == "Success response"
+
+    async def test_circuit_breaker_shared_state(self):
+        """Verifies circuit breaker shares state across multiple calls."""
+        # Reset circuit
+        circuit = get_openai_circuit()
+        await circuit.reset()
+
+        # Create two different agents
+        agent1 = MockAgent(failure_count=100, error_type="timeout")
+        agent2 = MockAgent(should_fail=False)
+
+        def fallback_factory():
+            return "Fallback response"
+
+        # Fail with agent1 multiple times to open circuit
+        for _ in range(5):
+            try:
+                await run_agent_with_circuit_breaker(agent1, "test prompt", fallback_factory)
+            except:
+                pass
+
+        # Circuit should be open
+        assert circuit.state == CircuitState.OPEN
+
+        # Now try with agent2 - should still get fallback due to shared circuit
+        result = await run_agent_with_circuit_breaker(agent2, "test prompt", fallback_factory)
+
+        assert result == "Fallback response"
+        assert agent2._call_count == 0  # Never called due to open circuit
+
+    async def test_circuit_breaker_recovery_to_half_open(self):
+        """Verifies circuit transitions to half-open for recovery testing."""
+        # Reset circuit
+        circuit = get_openai_circuit()
+        await circuit.reset()
+
+        # Force circuit open
+        await circuit.force_open()
+        assert circuit.state == CircuitState.OPEN
+
+        # Manually transition to half-open (simulating timeout passage)
+        circuit._state = CircuitState.HALF_OPEN
+        circuit._half_open_calls = 0
+
+        agent = MockAgent(should_fail=False)
+
+        def fallback_factory():
+            return "Fallback response"
+
+        # Successful call in half-open should close circuit
+        result = await run_agent_with_circuit_breaker(agent, "test prompt", fallback_factory)
+
+        assert result == "Success response"
+        assert circuit.state == CircuitState.CLOSED
+
+    async def test_circuit_breaker_half_open_failure_reopens(self):
+        """Verifies circuit reopens if half-open probe fails."""
+        # Reset circuit
+        circuit = get_openai_circuit()
+        await circuit.reset()
+
+        # Force circuit to half-open state
+        await circuit.force_open()
+        circuit._state = CircuitState.HALF_OPEN
+        circuit._half_open_calls = 0
+
+        # Agent that will fail
+        agent = MockAgent(failure_count=100, error_type="timeout")
+
+        def fallback_factory():
+            return "Fallback response"
+
+        # Failing call in half-open should reopen circuit
+        result = await run_agent_with_circuit_breaker(agent, "test prompt", fallback_factory)
+
+        assert result == "Fallback response"
+        assert circuit.state == CircuitState.OPEN
+
+    async def test_get_circuit_status(self):
+        """Verifies circuit status can be retrieved for monitoring."""
+        # Reset circuit
+        circuit = get_openai_circuit()
+        await circuit.reset()
+
+        status = get_circuit_status()
+
+        assert "state" in status
+        assert "consecutive_failures" in status
+        assert "total_failures" in status
+        assert "total_successes" in status
+        assert status["state"] == "closed"
+
+    async def test_is_circuit_open_helper(self):
+        """Verifies is_circuit_open helper function."""
+        # Reset circuit
+        circuit = get_openai_circuit()
+        await circuit.reset()
+
+        assert is_circuit_open() is False
+
+        # Force open
+        await circuit.force_open()
+        assert is_circuit_open() is True
+
+        # Reset
+        await circuit.reset()
+        assert is_circuit_open() is False
+
+    async def test_circuit_breaker_language_aware_fallback(self):
+        """Verifies circuit breaker works with language-aware fallbacks."""
+        # Reset circuit
+        circuit = get_openai_circuit()
+        await circuit.reset()
+        await circuit.force_open()
+
+        agent = MockAgent(should_fail=False)
+
+        # Spanish fallback
+        def spanish_fallback():
+            return "Respuesta de respaldo"
+
+        result = await run_agent_with_circuit_breaker(agent, "test prompt", spanish_fallback)
+
+        assert result == "Respuesta de respaldo"
+        assert circuit.state == CircuitState.OPEN
