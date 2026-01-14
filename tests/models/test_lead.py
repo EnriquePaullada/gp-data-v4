@@ -202,3 +202,215 @@ def test_format_history_limit_exceeds_history(fresh_lead, message_factory):
     # Should return all available messages
     lines = formatted.strip().split('\n')
     assert len(lines) == 2
+
+
+# --- CONTEXT PRUNING TESTS ---
+
+def test_format_history_no_pruning_when_under_limit(fresh_lead):
+    """Verifies no pruning occurs when history is under max_context_chars."""
+    # Add a few short messages (well under 6000 char limit)
+    for i in range(5):
+        msg = Message(
+            lead_id=fresh_lead.lead_id,
+            role=MessageRole.LEAD if i % 2 == 0 else MessageRole.ASSISTANT,
+            content=f"Short message {i}"
+        )
+        fresh_lead.add_message(msg)
+
+    formatted = fresh_lead.format_history()
+
+    # Should contain all messages without pruning
+    assert "Short message 0" in formatted
+    assert "Short message 4" in formatted
+    assert "[Earlier conversation:" not in formatted
+    assert "truncated" not in formatted
+
+
+def test_format_history_prunes_when_exceeds_limit(fresh_lead):
+    """Verifies pruning occurs when history exceeds max_context_chars."""
+    # Create messages with long content to exceed 6000 char limit
+    long_content = "x" * 800  # 800 chars per message
+    for i in range(10):  # 10 messages × 800 chars = 8000 chars
+        msg = Message(
+            lead_id=fresh_lead.lead_id,
+            role=MessageRole.LEAD if i % 2 == 0 else MessageRole.ASSISTANT,
+            content=f"Message {i}: {long_content}"
+        )
+        fresh_lead.add_message(msg)
+
+    formatted = fresh_lead.format_history()
+
+    # Should be significantly reduced from original 8000+ chars
+    # Allow small buffer for summary lines and formatting (6100 chars)
+    assert len(formatted) <= 6100
+
+    # Original unpruned would be much longer
+    assert len(formatted) < 8000
+
+    # Should contain truncation indicator
+    assert "[Earlier conversation:" in formatted or "messages truncated" in formatted or "messages omitted" in formatted
+
+
+def test_format_history_preserves_recent_messages(fresh_lead):
+    """Verifies recent messages are always kept in full when pruning."""
+    # Create long messages to trigger pruning
+    long_content = "x" * 800
+    for i in range(10):
+        msg = Message(
+            lead_id=fresh_lead.lead_id,
+            role=MessageRole.LEAD if i % 2 == 0 else MessageRole.ASSISTANT,
+            content=f"Message {i}: {long_content}"
+        )
+        fresh_lead.add_message(msg)
+
+    formatted = fresh_lead.format_history()
+
+    # Recent messages (last 5 by default from config) should be complete
+    # Message 9 (most recent) should be in full
+    assert f"Message 9: {long_content}" in formatted
+    # Message 8 should also be complete
+    assert f"Message 8: {long_content}" in formatted
+
+
+def test_format_history_truncates_older_messages(fresh_lead):
+    """Verifies older messages are truncated when pruning."""
+    # Create long messages
+    long_content = "y" * 800
+    for i in range(10):
+        msg = Message(
+            lead_id=fresh_lead.lead_id,
+            role=MessageRole.LEAD if i % 2 == 0 else MessageRole.ASSISTANT,
+            content=f"Message {i}: {long_content}"
+        )
+        fresh_lead.add_message(msg)
+
+    formatted = fresh_lead.format_history()
+
+    # Older messages should be either truncated with "..." or omitted
+    # Message 0 (oldest) might be truncated
+    if "Message 0:" in formatted:
+        # If present, should be truncated (not full 800 chars)
+        message_0_start = formatted.find("Message 0:")
+        message_0_section = formatted[message_0_start:message_0_start + 850]
+        # Should not contain the full long_content
+        assert long_content not in message_0_section or "..." in message_0_section
+
+
+def test_format_history_adds_pruning_summary(fresh_lead):
+    """Verifies pruning summary is added when messages are omitted."""
+    # Create very long messages to force aggressive pruning
+    very_long_content = "z" * 1200
+    for i in range(15):
+        msg = Message(
+            lead_id=fresh_lead.lead_id,
+            role=MessageRole.LEAD if i % 2 == 0 else MessageRole.ASSISTANT,
+            content=f"Message {i}: {very_long_content}"
+        )
+        fresh_lead.add_message(msg)
+
+    formatted = fresh_lead.format_history()
+
+    # Should include summary about pruning
+    has_summary = (
+        "[Earlier conversation:" in formatted or
+        "messages truncated" in formatted or
+        "messages omitted" in formatted or
+        "context limit" in formatted
+    )
+    assert has_summary
+
+
+def test_format_history_respects_min_recent_messages_config(fresh_lead):
+    """Verifies min_recent_messages config is respected during pruning."""
+    from src.config import get_settings
+    settings = get_settings()
+
+    # Create messages that will trigger pruning
+    long_content = "a" * 900
+    num_messages = 12
+    for i in range(num_messages):
+        msg = Message(
+            lead_id=fresh_lead.lead_id,
+            role=MessageRole.LEAD if i % 2 == 0 else MessageRole.ASSISTANT,
+            content=f"Message {i}: {long_content}"
+        )
+        fresh_lead.add_message(msg)
+
+    formatted = fresh_lead.format_history()
+
+    # Last min_recent_messages (default 5) should be complete
+    min_recent = min(settings.min_recent_messages, num_messages)
+    for i in range(num_messages - min_recent, num_messages):
+        # These recent messages should appear in full
+        assert f"Message {i}:" in formatted
+
+
+def test_format_history_pruning_with_limit_param(fresh_lead):
+    """Verifies pruning works correctly when limit parameter is used."""
+    # Create long messages
+    long_content = "b" * 1000
+    for i in range(15):
+        msg = Message(
+            lead_id=fresh_lead.lead_id,
+            role=MessageRole.LEAD if i % 2 == 0 else MessageRole.ASSISTANT,
+            content=f"Message {i}: {long_content}"
+        )
+        fresh_lead.add_message(msg)
+
+    # Request only last 8 messages
+    formatted = fresh_lead.format_history(limit=8)
+
+    # Should only consider last 8 messages for pruning
+    # Message 0-6 should not appear at all
+    assert "Message 0:" not in formatted
+    assert "Message 6:" not in formatted
+
+    # Message 7-14 should be considered for pruning
+    # Should still respect max_context_chars (with small buffer for summary lines)
+    assert len(formatted) <= 6100
+
+
+def test_format_history_empty_returns_empty_string(fresh_lead):
+    """Verifies empty history returns empty string even with pruning logic."""
+    formatted = fresh_lead.format_history()
+    assert formatted == ""
+
+
+def test_format_history_pruning_preserves_roles(fresh_lead):
+    """Verifies role prefixes are preserved during pruning."""
+    # Create long messages to trigger pruning
+    long_content = "c" * 800
+    for i in range(10):
+        msg = Message(
+            lead_id=fresh_lead.lead_id,
+            role=MessageRole.LEAD if i % 2 == 0 else MessageRole.ASSISTANT,
+            content=f"Message {i}: {long_content}"
+        )
+        fresh_lead.add_message(msg)
+
+    formatted = fresh_lead.format_history(include_roles=True)
+
+    # Should include role prefixes
+    assert "LEAD:" in formatted
+    assert "ASSISTANT:" in formatted
+
+
+def test_format_history_pruning_without_roles(fresh_lead):
+    """Verifies pruning works correctly without role prefixes."""
+    # Create long messages
+    long_content = "d" * 800
+    for i in range(10):
+        msg = Message(
+            lead_id=fresh_lead.lead_id,
+            role=MessageRole.LEAD if i % 2 == 0 else MessageRole.ASSISTANT,
+            content=f"Message {i}: {long_content}"
+        )
+        fresh_lead.add_message(msg)
+
+    formatted = fresh_lead.format_history(include_roles=False)
+
+    # Should not include role prefixes
+    assert "LEAD:" not in formatted
+    assert "ASSISTANT:" not in formatted
+    # Should still be pruned (with small buffer for summary lines)
+    assert len(formatted) <= 6100

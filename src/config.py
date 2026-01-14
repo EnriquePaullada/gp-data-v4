@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     # ============================================
     enterprise_threshold: int = 30  # Seats needed for enterprise classification
     history_window_size: int = 20   # Max messages in working memory
+    max_context_chars: int = Field(
+        default=6000,
+        description="Maximum characters in formatted conversation history to prevent context overflow"
+    )
+    min_recent_messages: int = Field(
+        default=5,
+        description="Minimum number of recent messages to always include in full"
+    )
 
     # ============================================
     # COST CONTROLS & SAFETY
