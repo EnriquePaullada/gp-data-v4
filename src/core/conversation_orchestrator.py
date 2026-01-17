@@ -15,9 +15,11 @@ from src.models.executor_response import ExecutorResponse
 from src.agents.classifier_agent import ClassifierAgent
 from src.agents.director_agent import DirectorService
 from src.agents.executor_agent import ExecutorService
+from src.models.director_response import StrategicAction
 from src.utils.observability import log_agent_execution
 from src.repositories import db_manager, LeadRepository, MessageRepository
 from src.utils.security_validator import SecurityValidator, ValidationResult
+from src.services.handoff_service import HandoffService, get_handoff_service
 from src.config import settings
 from typing import Optional
 import time
@@ -25,6 +27,11 @@ import time
 
 class SecurityException(Exception):
     """Raised when a security threat is detected."""
+    pass
+
+
+class HandoffActiveException(Exception):
+    """Raised when lead is in active handoff state."""
     pass
 
 
@@ -40,11 +47,14 @@ class OrchestrationResult:
     # Intermediate agent outputs
     classification: ClassifierResponse
     strategy: DirectorResponse
-    execution: ExecutorResponse
+    execution: Optional[ExecutorResponse]  # None when handoff triggered
 
     # Metadata
     total_duration_ms: float
     lead_updated: Lead
+
+    # Handoff indicator
+    handoff_triggered: bool = False
 
 
 class ConversationOrchestrator:
@@ -70,7 +80,8 @@ class ConversationOrchestrator:
         self,
         classifier: ClassifierAgent | None = None,
         director: DirectorService | None = None,
-        executor: ExecutorService | None = None
+        executor: ExecutorService | None = None,
+        handoff_service: HandoffService | None = None
     ):
         """
         Initialize the orchestrator with agent instances.
@@ -79,11 +90,13 @@ class ConversationOrchestrator:
             classifier: ClassifierAgent instance (creates new if None)
             director: DirectorService instance (creates new if None)
             executor: ExecutorService instance (creates new if None)
+            handoff_service: HandoffService instance (creates new if None)
         """
         # Allow dependency injection for testing
         self.classifier = classifier or ClassifierAgent()
         self.director = director or DirectorService()
         self.executor = executor or ExecutorService()
+        self.handoff_service = handoff_service or get_handoff_service()
 
         # Initialize repository instances
         self.lead_repo: Optional[LeadRepository] = None
@@ -169,6 +182,16 @@ class ConversationOrchestrator:
 
         logger.info(f"🎬 Starting orchestration for lead: {lead.lead_id}")
 
+        # Check if lead is in active handoff state
+        if lead.is_handed_off:
+            logger.info(
+                f"Lead {lead.lead_id} is in handoff state, skipping AI processing",
+                extra={"handoff_status": lead.handoff_status}
+            )
+            raise HandoffActiveException(
+                f"Lead {lead.lead_id} is currently in human handoff state"
+            )
+
         # Step 0: Security validation (if enabled)
         validation_result: Optional[ValidationResult] = None
         if self.security_validator:
@@ -220,6 +243,61 @@ class ConversationOrchestrator:
             # Step 3: DIRECT - determine strategy
             logger.info("Step 3/4: Determining strategy")
             strategy = await self.director.decide_next_move(lead, classification)
+
+            # Step 3.5: Check for ESCALATE action - trigger handoff
+            if strategy.action == StrategicAction.ESCALATE:
+                logger.info(f"Director triggered ESCALATE for lead {lead.lead_id}")
+
+                # Initiate handoff with Director's reasoning
+                await self.handoff_service.initiate_handoff(
+                    lead=lead,
+                    reason=strategy.strategic_reasoning,
+                    urgency="high" if classification.urgency == "high" else "normal"
+                )
+
+                # Get handoff message in appropriate language
+                language = strategy.message_strategy.language
+                handoff_message = self.handoff_service.get_handoff_message(language)
+
+                # Add handoff message to lead history
+                assistant_message = Message(
+                    lead_id=lead.lead_id,
+                    role=MessageRole.ASSISTANT,
+                    content=handoff_message
+                )
+                lead.add_message(assistant_message)
+
+                # Persist if repositories available
+                if self.lead_repo and self.message_repo:
+                    await self.lead_repo.save(lead)
+                    await self.message_repo.save_messages([incoming_message, assistant_message])
+
+                total_duration_ms = (time.time() - start_time) * 1000
+
+                log_agent_execution(
+                    agent_name="ConversationOrchestrator",
+                    lead_id=lead.lead_id,
+                    action="handoff_triggered",
+                    duration_ms=total_duration_ms,
+                    intent=classification.intent,
+                    strategic_action=strategy.action
+                )
+
+                logger.success(
+                    f"🤝 Handoff triggered in {total_duration_ms:.0f}ms | "
+                    f"Reason: {strategy.strategic_reasoning[:50]}..."
+                )
+
+                # Return early with handoff result (no Executor needed)
+                return OrchestrationResult(
+                    outbound_message=handoff_message,
+                    classification=classification,
+                    strategy=strategy,
+                    execution=None,  # No executor for handoff
+                    total_duration_ms=total_duration_ms,
+                    lead_updated=lead,
+                    handoff_triggered=True
+                )
 
             # Step 4: EXECUTE - generate response
             logger.info("Step 4/4: Generating response")

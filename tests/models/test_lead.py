@@ -1,6 +1,6 @@
 import pytest
 import datetime as dt
-from src.models.lead import Lead
+from src.models.lead import Lead, HandoffStatus
 from src.models.message import Message, MessageRole
 from src.models.intelligence import IntelligenceSignal, BANTDimension, ConfidenceScore
 
@@ -414,3 +414,99 @@ def test_format_history_pruning_without_roles(fresh_lead):
     assert "ASSISTANT:" not in formatted
     # Should still be pruned (with small buffer for summary lines)
     assert len(formatted) <= 6100
+
+
+# --- HUMAN HANDOFF TESTS ---
+
+def test_handoff_default_state(fresh_lead):
+    """Verifies new leads have no handoff by default."""
+    assert fresh_lead.handoff_status == HandoffStatus.NONE
+    assert fresh_lead.handoff_requested_at is None
+    assert fresh_lead.handoff_reason is None
+    assert fresh_lead.handoff_assigned_to is None
+    assert fresh_lead.is_handed_off is False
+
+
+def test_request_handoff(fresh_lead):
+    """Verifies handoff can be requested with a reason."""
+    reason = "Complex technical question about API integration"
+    fresh_lead.request_handoff(reason)
+
+    assert fresh_lead.handoff_status == HandoffStatus.REQUESTED
+    assert fresh_lead.handoff_requested_at is not None
+    assert fresh_lead.handoff_reason == reason
+    assert fresh_lead.is_handed_off is True
+
+
+def test_assign_handoff(fresh_lead):
+    """Verifies handoff can be assigned to a human agent."""
+    fresh_lead.request_handoff("Customer upset")
+    fresh_lead.assign_handoff("sales_rep_123")
+
+    assert fresh_lead.handoff_status == HandoffStatus.ASSIGNED
+    assert fresh_lead.handoff_assigned_to == "sales_rep_123"
+    assert fresh_lead.is_handed_off is True
+
+
+def test_resolve_handoff(fresh_lead):
+    """Verifies handoff can be marked as resolved."""
+    fresh_lead.request_handoff("Pricing negotiation")
+    fresh_lead.assign_handoff("manager_456")
+    fresh_lead.resolve_handoff()
+
+    assert fresh_lead.handoff_status == HandoffStatus.RESOLVED
+    # Resolved means handoff is complete, AI can resume
+    assert fresh_lead.is_handed_off is False
+
+
+def test_clear_handoff(fresh_lead):
+    """Verifies handoff state can be completely cleared."""
+    fresh_lead.request_handoff("Issue resolved by AI")
+    fresh_lead.assign_handoff("agent_789")
+    fresh_lead.clear_handoff()
+
+    assert fresh_lead.handoff_status == HandoffStatus.NONE
+    assert fresh_lead.handoff_requested_at is None
+    assert fresh_lead.handoff_reason is None
+    assert fresh_lead.handoff_assigned_to is None
+    assert fresh_lead.is_handed_off is False
+
+
+def test_is_handed_off_only_for_active_states(fresh_lead):
+    """Verifies is_handed_off only returns True for REQUESTED and ASSIGNED."""
+    # NONE - not handed off
+    assert fresh_lead.is_handed_off is False
+
+    # REQUESTED - handed off
+    fresh_lead.request_handoff("Test")
+    assert fresh_lead.is_handed_off is True
+
+    # ASSIGNED - still handed off
+    fresh_lead.assign_handoff("agent")
+    assert fresh_lead.is_handed_off is True
+
+    # RESOLVED - no longer handed off
+    fresh_lead.resolve_handoff()
+    assert fresh_lead.is_handed_off is False
+
+
+def test_handoff_updates_timestamp(fresh_lead):
+    """Verifies handoff operations update the updated_at timestamp."""
+    original_updated_at = fresh_lead.updated_at
+
+    # Small delay to ensure timestamp difference
+    import time
+    time.sleep(0.01)
+
+    fresh_lead.request_handoff("Test reason")
+
+    assert fresh_lead.updated_at > original_updated_at
+
+
+def test_handoff_reason_preserved_through_assignment(fresh_lead):
+    """Verifies the original reason is preserved when handoff is assigned."""
+    reason = "Customer requested human agent"
+    fresh_lead.request_handoff(reason)
+    fresh_lead.assign_handoff("human_agent")
+
+    assert fresh_lead.handoff_reason == reason
