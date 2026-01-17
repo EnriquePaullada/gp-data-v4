@@ -1,0 +1,65 @@
+# =============================================================================
+# Docker Build Context Exclusions
+# =============================================================================
+
+# Git
+.git
+.gitignore
+
+# Python
+.venv
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+*.egg
+.eggs
+
+# Testing
+tests/
+.pytest_cache
+.testmondata
+.coverage
+htmlcov/
+.tox
+
+# IDE / Editor
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Documentation
+*.md
+docs/
+
+# Node (if any tooling exists)
+node_modules
+package*.json
+
+# Build artifacts
+dist/
+build/
+*.whl
+
+# Local development
+.claude
+.ruff_cache
+setup_mongodb.py
+
+# GitHub
+.github
+
+# Misc
+*.log
+*.bak
+tmp/
+temp/
