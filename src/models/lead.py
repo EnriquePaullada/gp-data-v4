@@ -16,6 +16,14 @@ class SalesStage(StrEnum):
     WON = "5 - closed_won"
     LOST = "6 - closed_lost"
 
+
+class HandoffStatus(StrEnum):
+    """Human handoff states for escalation workflow."""
+    NONE = "none"              # AI handling conversation
+    REQUESTED = "requested"    # Escalation triggered, awaiting human
+    ASSIGNED = "assigned"      # Human agent has taken over
+    RESOLVED = "resolved"      # Handoff complete, AI can resume
+
 class Lead(MongoBaseModel):
     """
     The Central Domain Model.
@@ -39,6 +47,12 @@ class Lead(MongoBaseModel):
     next_followup_at: Optional[dt.datetime] = None
     last_interaction_at: dt.datetime = Field(default_factory=lambda: dt.datetime.now(dt.UTC))
 
+    # Human Handoff
+    handoff_status: HandoffStatus = HandoffStatus.NONE
+    handoff_requested_at: Optional[dt.datetime] = None
+    handoff_reason: Optional[str] = None
+    handoff_assigned_to: Optional[str] = None  # Human agent identifier
+
     @computed_field
     @property
     def bant_summary(self) -> Dict[BANTDimension, str]:
@@ -51,6 +65,48 @@ class Lead(MongoBaseModel):
         for signal in self.signals:
             summary[signal.dimension] = signal.extracted_value
         return summary
+
+    @computed_field
+    @property
+    def is_handed_off(self) -> bool:
+        """Returns True if conversation is currently in human handoff state."""
+        return self.handoff_status in (HandoffStatus.REQUESTED, HandoffStatus.ASSIGNED)
+
+    def request_handoff(self, reason: str) -> None:
+        """
+        Initiate human handoff for this lead.
+
+        Args:
+            reason: Why the AI is escalating (e.g., "Complex technical question")
+        """
+        self.handoff_status = HandoffStatus.REQUESTED
+        self.handoff_requested_at = dt.datetime.now(dt.UTC)
+        self.handoff_reason = reason
+        self.updated_at = dt.datetime.now(dt.UTC)
+
+    def assign_handoff(self, agent_id: str) -> None:
+        """
+        Assign handoff to a human agent.
+
+        Args:
+            agent_id: Identifier for the human agent taking over
+        """
+        self.handoff_status = HandoffStatus.ASSIGNED
+        self.handoff_assigned_to = agent_id
+        self.updated_at = dt.datetime.now(dt.UTC)
+
+    def resolve_handoff(self) -> None:
+        """Mark handoff as resolved, allowing AI to resume."""
+        self.handoff_status = HandoffStatus.RESOLVED
+        self.updated_at = dt.datetime.now(dt.UTC)
+
+    def clear_handoff(self) -> None:
+        """Reset handoff state completely (AI takes over again)."""
+        self.handoff_status = HandoffStatus.NONE
+        self.handoff_requested_at = None
+        self.handoff_reason = None
+        self.handoff_assigned_to = None
+        self.updated_at = dt.datetime.now(dt.UTC)
 
     def add_signal(self, signal: IntelligenceSignal):
         """Standard method for evolving lead state with a timestamp update."""

@@ -4,11 +4,18 @@ Verifies the complete 3-agent pipeline integration and orchestration logic.
 """
 import pytest
 import os
-from src.core.conversation_orchestrator import ConversationOrchestrator, OrchestrationResult
-from src.models.lead import Lead, SalesStage
+from unittest.mock import AsyncMock, MagicMock
+from src.core.conversation_orchestrator import (
+    ConversationOrchestrator,
+    OrchestrationResult,
+    HandoffActiveException
+)
+from src.models.lead import Lead, SalesStage, HandoffStatus
 from src.models.message import MessageRole
-from src.models.classifier_response import Intent
-from src.models.director_response import StrategicAction
+from src.models.classifier_response import Intent, ClassifierResponse, UrgencyLevel
+from src.models.director_response import StrategicAction, DirectorResponse, MessageStrategy
+from src.models.intelligence import Sentiment
+from src.services.handoff_service import HandoffService
 
 
 @pytest.fixture
@@ -527,3 +534,235 @@ class TestConversationOrchestrator:
 
         finally:
             await orchestrator.shutdown()
+
+
+# ============================================
+# HUMAN HANDOFF TESTS
+# ============================================
+
+@pytest.mark.asyncio
+class TestOrchestratorHandoff:
+    """Test suite for human handoff integration in orchestrator."""
+
+    async def test_handoff_active_raises_exception(self):
+        """Verify orchestrator raises exception when lead is in handoff state."""
+        lead = Lead(lead_id="+1234567890", full_name="Handoff Test")
+        lead.request_handoff("Customer requested human")
+
+        orchestrator = ConversationOrchestrator()
+
+        with pytest.raises(HandoffActiveException) as exc_info:
+            await orchestrator.process_message("Hello", lead)
+
+        assert "human handoff state" in str(exc_info.value)
+
+    async def test_handoff_triggered_on_escalate_action(self):
+        """Verify handoff is triggered when Director returns ESCALATE."""
+        lead = Lead(lead_id="+1234567890", full_name="Escalate Test")
+
+        # Mock classifier
+        mock_classifier = MagicMock()
+        mock_classifier.classify = AsyncMock(return_value=ClassifierResponse(
+            intent=Intent.SUPPORT,
+            intent_confidence=0.9,
+            topic="angry customer",
+            topic_confidence=0.9,
+            urgency=UrgencyLevel.HIGH,
+            urgency_confidence=0.9,
+            language="english",
+            sentiment=Sentiment.NEGATIVE,
+            engagement_level="high",
+            requires_human_escalation=True,
+            reasoning="Customer is upset and needs human attention",
+            new_signals=[]
+        ))
+
+        # Mock director to return ESCALATE
+        mock_director = MagicMock()
+        mock_director.decide_next_move = AsyncMock(return_value=DirectorResponse(
+            action=StrategicAction.ESCALATE,
+            strategic_reasoning="Customer is frustrated, needs human touch",
+            message_strategy=MessageStrategy(
+                tone="empathetic",
+                language="english",
+                empathy_points=["Acknowledge frustration"],
+                key_points=["Transfer to human"],
+                conversational_goal="Smooth handoff"
+            )
+        ))
+
+        # Mock handoff service
+        mock_handoff = MagicMock(spec=HandoffService)
+        mock_handoff.initiate_handoff = AsyncMock(return_value=True)
+        mock_handoff.get_handoff_message = MagicMock(
+            return_value="I'm connecting you with a specialist..."
+        )
+
+        orchestrator = ConversationOrchestrator(
+            classifier=mock_classifier,
+            director=mock_director,
+            executor=None,  # Should not be called
+            handoff_service=mock_handoff
+        )
+
+        result = await orchestrator.process_message("I'm very frustrated!", lead)
+
+        # Verify handoff was triggered
+        assert result.handoff_triggered is True
+        assert result.execution is None  # Executor not called
+        mock_handoff.initiate_handoff.assert_called_once()
+
+    async def test_handoff_updates_lead_status(self):
+        """Verify lead handoff status is updated when handoff triggered."""
+        lead = Lead(lead_id="+1234567890", full_name="Status Test")
+
+        # Mock classifier
+        mock_classifier = MagicMock()
+        mock_classifier.classify = AsyncMock(return_value=ClassifierResponse(
+            intent=Intent.SUPPORT,
+            intent_confidence=0.9,
+            topic="escalation request",
+            topic_confidence=0.9,
+            urgency=UrgencyLevel.HIGH,
+            urgency_confidence=0.9,
+            language="english",
+            sentiment=Sentiment.NEGATIVE,
+            engagement_level="high",
+            requires_human_escalation=True,
+            reasoning="Needs human attention",
+            new_signals=[]
+        ))
+
+        # Mock director to return ESCALATE
+        mock_director = MagicMock()
+        mock_director.decide_next_move = AsyncMock(return_value=DirectorResponse(
+            action=StrategicAction.ESCALATE,
+            strategic_reasoning="Escalating to human",
+            message_strategy=MessageStrategy(
+                tone="empathetic",
+                language="english",
+                empathy_points=["Understanding"],
+                key_points=["Transfer"],
+                conversational_goal="Handoff"
+            )
+        ))
+
+        # Use real handoff service (not mocked) to test state update
+        orchestrator = ConversationOrchestrator(
+            classifier=mock_classifier,
+            director=mock_director,
+            executor=None
+        )
+
+        result = await orchestrator.process_message("Please transfer me", lead)
+
+        # Verify lead status was updated
+        assert result.lead_updated.handoff_status == HandoffStatus.REQUESTED
+        assert result.lead_updated.handoff_reason is not None
+
+    async def test_handoff_returns_appropriate_message(self):
+        """Verify handoff returns the handoff message to the lead."""
+        lead = Lead(lead_id="+1234567890", full_name="Message Test")
+
+        mock_classifier = MagicMock()
+        mock_classifier.classify = AsyncMock(return_value=ClassifierResponse(
+            intent=Intent.SUPPORT,
+            intent_confidence=0.9,
+            topic="test",
+            topic_confidence=0.9,
+            urgency=UrgencyLevel.MEDIUM,
+            urgency_confidence=0.9,
+            language="spanish",
+            sentiment=Sentiment.NEUTRAL,
+            engagement_level="medium",
+            requires_human_escalation=True,
+            reasoning="Test",
+            new_signals=[]
+        ))
+
+        mock_director = MagicMock()
+        mock_director.decide_next_move = AsyncMock(return_value=DirectorResponse(
+            action=StrategicAction.ESCALATE,
+            strategic_reasoning="Test escalation",
+            message_strategy=MessageStrategy(
+                tone="empathetic",
+                language="spanish",  # Spanish language
+                empathy_points=["Test"],
+                key_points=["Test"],
+                conversational_goal="Handoff"
+            )
+        ))
+
+        orchestrator = ConversationOrchestrator(
+            classifier=mock_classifier,
+            director=mock_director,
+            executor=None
+        )
+
+        result = await orchestrator.process_message("Necesito ayuda", lead)
+
+        # Verify Spanish handoff message is returned
+        assert "especialista" in result.outbound_message.lower()
+        assert result.handoff_triggered is True
+
+    async def test_handoff_adds_message_to_history(self):
+        """Verify handoff message is added to lead's conversation history."""
+        lead = Lead(lead_id="+1234567890", full_name="History Test")
+        initial_message_count = lead.message_count
+
+        mock_classifier = MagicMock()
+        mock_classifier.classify = AsyncMock(return_value=ClassifierResponse(
+            intent=Intent.SUPPORT,
+            intent_confidence=0.9,
+            topic="test",
+            topic_confidence=0.9,
+            urgency=UrgencyLevel.MEDIUM,
+            urgency_confidence=0.9,
+            language="english",
+            sentiment=Sentiment.NEUTRAL,
+            engagement_level="medium",
+            requires_human_escalation=True,
+            reasoning="Test",
+            new_signals=[]
+        ))
+
+        mock_director = MagicMock()
+        mock_director.decide_next_move = AsyncMock(return_value=DirectorResponse(
+            action=StrategicAction.ESCALATE,
+            strategic_reasoning="Test",
+            message_strategy=MessageStrategy(
+                tone="empathetic",
+                language="english",
+                empathy_points=["Test"],
+                key_points=["Test"],
+                conversational_goal="Handoff"
+            )
+        ))
+
+        orchestrator = ConversationOrchestrator(
+            classifier=mock_classifier,
+            director=mock_director,
+            executor=None
+        )
+
+        result = await orchestrator.process_message("Help me", lead)
+
+        # Verify messages were added (incoming + handoff response)
+        assert result.lead_updated.message_count == initial_message_count + 2
+        assert result.lead_updated.recent_history[-1].role == MessageRole.ASSISTANT
+        assert result.lead_updated.recent_history[-2].role == MessageRole.LEAD
+
+    async def test_normal_flow_not_affected_by_handoff(self):
+        """Verify normal flow works when handoff is not triggered."""
+        if not os.getenv("OPENAI_API_KEY"):
+            pytest.skip("No API Key found")
+
+        lead = Lead(lead_id="+1234567890", full_name="Normal Test")
+        orchestrator = ConversationOrchestrator()
+
+        result = await orchestrator.process_message("Hello, tell me about your product", lead)
+
+        # Verify normal flow completed
+        assert result.handoff_triggered is False
+        assert result.execution is not None
+        assert result.outbound_message is not None

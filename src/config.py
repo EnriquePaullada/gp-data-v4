@@ -192,6 +192,19 @@ class Settings(BaseSettings):
         description="Hours between follow-up attempts (escalating)"
     )
 
+    # ============================================
+    # HUMAN HANDOFF
+    # ============================================
+    slack_handoff_webhook_url: Optional[str] = Field(
+        default=None,
+        validation_alias="SLACK_HANDOFF_WEBHOOK_URL",
+        description="Slack webhook URL for handoff notifications"
+    )
+    handoff_message_template: str = Field(
+        default="A lead requires human attention",
+        description="Default message when AI triggers handoff"
+    )
+
 
 @lru_cache()
 def get_settings() -> Settings:
